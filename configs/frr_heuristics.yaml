@@ -1,0 +1,48 @@
+mining:
+  repository: "FRRouting/frr"
+  from: 2024-01-01T00:00:00Z
+  to: 2024-12-31T23:59:59Z
+  observation_end: 2026-08-21T00:00:00Z
+  cache_dir: "./data/cache"
+  git_dir: "./data/repos/FRRouting/frr.git"
+
+heuristics:
+  version: "1.0"
+  repository: "FRRouting/frr"
+
+  path_rules:
+    - name: "core_fsm_daemon"
+      pattern: "(bgpd|bfdd)/.*"
+      weight: 0.35
+    - name: "routing_protocol_daemon"
+      pattern: "(ospfd|ospf6d|isisd|pimd)/.*"
+      weight: 0.25
+    - name: "event_and_ipc_lib"
+      pattern: "lib/(event|zclient|frrevent|hook).*"
+      weight: 0.30
+    - name: "zebra_rib_kernel"
+      pattern: "zebra/.*"
+      weight: 0.20
+
+  keyword_rules:
+    - name: "fsm_state_transition"
+      pattern: "(?i)(?:^|[^a-zA-Z0-9])(fsm|state_machine|transition|session_state|neighbor_state)(?:$|[^a-zA-Z0-9])"
+      weight: 0.30
+      match_fields: ["diff_symbols", "commit_messages", "pr_body", "pr_title"]
+    - name: "lifecycle_and_restart"
+      pattern: "(?i)(?:^|[^a-zA-Z0-9])(graceful_restart|warm_restart|reconnect|re-establish|shutdown|startup)(?:$|[^a-zA-Z0-9])"
+      weight: 0.25
+      match_fields: ["diff_symbols", "commit_messages", "pr_title"]
+    - name: "async_timers_and_queues"
+      pattern: "(?i)(?:^|[^a-zA-Z0-9])(timer|callback|notify|thread_add_timer|event_add_timer|work_queue)(?:$|[^a-zA-Z0-9])"
+      weight: 0.25
+      match_fields: ["diff_symbols", "pr_body"]
+    - name: "concurrency_and_races"
+      pattern: "(?i)(?:^|[^a-zA-Z0-9])(mutex|lock|race|ordering|stale|pending|sync|barrier)(?:$|[^a-zA-Z0-9])"
+      weight: 0.20
+      match_fields: ["commit_messages", "pr_title"]
+
+  scoring:
+    high_threshold: 0.60
+    medium_threshold: 0.30
+    max_cap: 1.00
