@@ -2,7 +2,7 @@ package correlator
 
 import (
 	"context"
-	"fmt"
+	"strings"
 	"time"
 
 	"pr-analysis/internal/gitx"
@@ -25,12 +25,35 @@ func (c *Correlator) CorrelatePR(ctx context.Context, orig *model.OriginalPR, po
 	var medium []model.MediumCorrectiveSignal
 	var weak []model.WeakCorrectiveSignal
 
-	targetSHA := orig.MergeCommitSHA
-	if targetSHA == "" {
-		targetSHA = orig.HeadSHA
+	// Collect all candidate SHAs for this PR (Merge commit SHA, Head commit SHA, and PR branch commits)
+	shaMap := make(map[string]bool)
+	if orig.MergeCommitSHA != "" {
+		shaMap[orig.MergeCommitSHA] = true
 	}
+	if orig.HeadSHA != "" {
+		shaMap[orig.HeadSHA] = true
+	}
+	for _, sha := range orig.CommitSHAs {
+		if sha != "" {
+			shaMap[sha] = true
+		}
+	}
+
+	var targetSHAs []string
+	for sha := range shaMap {
+		targetSHAs = append(targetSHAs, sha)
+	}
+
 	prNum := orig.Number
 	t0 := orig.MergedAt
+
+	// Filter changed functions with length >= 4
+	var validFunctions []string
+	for _, fn := range orig.ChangedFunctions {
+		if len(fn) >= 4 {
+			validFunctions = append(validFunctions, fn)
+		}
+	}
 
 	// 1. Scan Post-T0 Commits
 	for _, commit := range postCommits {
@@ -43,60 +66,72 @@ func (c *Correlator) CorrelatePR(ctx context.Context, orig *model.OriginalPR, po
 		}
 
 		fullMsg := commit.FullMessage
+		lowerMsg := strings.ToLower(fullMsg)
 
-		// Strong Check 1: Fixes: <SHA>
-		if snippet, matched := MatchFixesSHA(fullMsg, targetSHA); matched {
-			strong = append(strong, model.StrongCorrectiveSignal{
-				SignalType: "FIXES_SHA",
-				SourceType: "COMMIT",
-				SourceRef:  commit.SHA,
-				Timestamp:  commit.Date,
-				RawSnippet: snippet,
-				Confidence: 1.0,
-			})
+		// Fast pre-filter: only run strong regexes if message has citation keywords
+		hasFixCitation := strings.Contains(lowerMsg, "fix") ||
+			strings.Contains(lowerMsg, "revert") ||
+			strings.Contains(lowerMsg, "regression") ||
+			strings.Contains(lowerMsg, "broken") ||
+			strings.Contains(lowerMsg, "caused") ||
+			strings.Contains(lowerMsg, "close") ||
+			strings.Contains(lowerMsg, "resolve")
+
+		if hasFixCitation {
+			// Strong Check 1: Fixes: <SHA>
+			if snippet, matched := MatchFixesSHA(fullMsg, targetSHAs); matched {
+				strong = append(strong, model.StrongCorrectiveSignal{
+					SignalType: "FIXES_SHA",
+					SourceType: "COMMIT",
+					SourceRef:  commit.SHA,
+					Timestamp:  commit.Date,
+					RawSnippet: snippet,
+					Confidence: 1.0,
+				})
+			}
+
+			// Strong Check 2: Fixes #<PR_NUM>
+			if snippet, matched := MatchFixesPR(fullMsg, prNum); matched {
+				strong = append(strong, model.StrongCorrectiveSignal{
+					SignalType: "FIXES_PR",
+					SourceType: "COMMIT",
+					SourceRef:  commit.SHA,
+					Timestamp:  commit.Date,
+					RawSnippet: snippet,
+					Confidence: 1.0,
+				})
+			}
+
+			// Strong Check 3: Revert commit
+			if snippet, matched := MatchRevert(fullMsg, targetSHAs, prNum); matched {
+				strong = append(strong, model.StrongCorrectiveSignal{
+					SignalType: "EXPLICIT_REVERT",
+					SourceType: "COMMIT",
+					SourceRef:  commit.SHA,
+					Timestamp:  commit.Date,
+					RawSnippet: snippet,
+					Confidence: 1.0,
+				})
+			}
+
+			// Strong Check 4: Regression mention
+			if snippet, matched := MatchRegressionMentions(fullMsg, targetSHAs, prNum); matched {
+				strong = append(strong, model.StrongCorrectiveSignal{
+					SignalType: "REGRESSION_MENTION",
+					SourceType: "COMMIT",
+					SourceRef:  commit.SHA,
+					Timestamp:  commit.Date,
+					RawSnippet: snippet,
+					Confidence: 1.0,
+				})
+			}
 		}
 
-		// Strong Check 2: Fixes #<PR_NUM>
-		if snippet, matched := MatchFixesPR(fullMsg, prNum); matched {
-			strong = append(strong, model.StrongCorrectiveSignal{
-				SignalType: "FIXES_PR",
-				SourceType: "COMMIT",
-				SourceRef:  commit.SHA,
-				Timestamp:  commit.Date,
-				RawSnippet: snippet,
-				Confidence: 1.0,
-			})
-		}
-
-		// Strong Check 3: Revert commit
-		if snippet, matched := MatchRevert(fullMsg, targetSHA, prNum); matched {
-			strong = append(strong, model.StrongCorrectiveSignal{
-				SignalType: "EXPLICIT_REVERT",
-				SourceType: "COMMIT",
-				SourceRef:  commit.SHA,
-				Timestamp:  commit.Date,
-				RawSnippet: snippet,
-				Confidence: 1.0,
-			})
-		}
-
-		// Strong Check 4: Regression mention
-		if snippet, matched := MatchRegressionMentions(fullMsg, targetSHA, prNum); matched {
-			strong = append(strong, model.StrongCorrectiveSignal{
-				SignalType: "REGRESSION_MENTION",
-				SourceType: "COMMIT",
-				SourceRef:  commit.SHA,
-				Timestamp:  commit.Date,
-				RawSnippet: snippet,
-				Confidence: 1.0,
-			})
-		}
-
-		// Check bugfix keyword correlation
+		// Check bugfix keyword correlation for medium & weak signals
 		if HasFixKeywords(commit.Subject) {
-			// Check symbol overlap if message mentions symbol
-			for _, fn := range orig.ChangedFunctions {
-				if len(fn) > 4 && containsWord(fullMsg, fn) {
+			// Check symbol overlap
+			for _, fn := range validFunctions {
+				if strings.Contains(fullMsg, fn) {
 					medium = append(medium, model.MediumCorrectiveSignal{
 						SignalType:     "SAME_FUNCTION_FIX",
 						SourceType:     "COMMIT",
@@ -111,7 +146,7 @@ func (c *Correlator) CorrelatePR(ctx context.Context, orig *model.OriginalPR, po
 			// Check file overlap if within 90 days
 			if commit.Date.Sub(t0) <= 90*24*time.Hour {
 				for _, cf := range orig.ChangedFiles {
-					if containsWord(fullMsg, cf.Path) {
+					if len(cf.Path) > 5 && strings.Contains(fullMsg, cf.Path) {
 						weak = append(weak, model.WeakCorrectiveSignal{
 							SignalType: "SAME_FILE_MODIFICATION",
 							SourceRef:  commit.SHA,
@@ -128,11 +163,11 @@ func (c *Correlator) CorrelatePR(ctx context.Context, orig *model.OriginalPR, po
 	// Calculate summary rank score: strong signals weighted heavily
 	rankScore := 0.0
 	if len(strong) > 0 {
-		rankScore += 1.0
+		rankScore = 1.0
 	} else if len(medium) > 0 {
-		rankScore += 0.50 + float64(len(medium))*0.10
+		rankScore = 0.50 + float64(len(medium))*0.05
 	} else if len(weak) > 0 {
-		rankScore += 0.10 + float64(len(weak))*0.05
+		rankScore = 0.10 + float64(len(weak))*0.02
 	}
 	if rankScore > 1.0 {
 		rankScore = 1.0
@@ -144,26 +179,4 @@ func (c *Correlator) CorrelatePR(ctx context.Context, orig *model.OriginalPR, po
 		MediumSignals:    medium,
 		WeakSignals:      weak,
 	}
-}
-
-func containsWord(text, word string) bool {
-	return len(word) > 0 && (text == word || 
-		fmt.Sprintf(" %s ", text) != "" && (
-			containsSubstring(text, " "+word+" ") ||
-			containsSubstring(text, " "+word+":") ||
-			containsSubstring(text, "("+word+")") ||
-			containsSubstring(text, "`"+word+"`")))
-}
-
-func containsSubstring(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || s != "" && (s == substr || len(s) > 0 && len(substr) > 0 && len(s) >= len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || indexOf(s, substr) >= 0)))
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

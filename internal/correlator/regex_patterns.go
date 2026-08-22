@@ -9,35 +9,54 @@ import (
 
 var (
 	// Strong Fixes: <SHA> regex
-	fixesSHARegex = regexp.MustCompile(`(?i)(?:fixes|fixed-by):\s*([0-9a-f]{7,40})`)
+	// Matches: "Fixes: 1fb48f5", "Fixes: commit 1fb48f5", "Fixes 1fb48f5", "fixed-by: 1fb48f5"
+	fixesSHARegex = regexp.MustCompile(`(?i)(?:fixes|fixed-by|fixes\s+commit|fixed\s+by|fixes\s+in):\s*["']?([0-9a-f]{6,40})["']?`)
 
 	// Strong Fixes: #<PR_NUM> regex
-	fixesPRRegex = regexp.MustCompile(`(?i)(?:fixes|fixed-by|closes|resolves):\s*#([0-9]+)`)
+	// Matches: "Fixes: #16194", "Fixes #16194", "Closes #16194", "Resolves #16194"
+	fixesPRRegex = regexp.MustCompile(`(?i)(?:fixes|fixed-by|closes|resolves|reverts)\s*[:]?\s*#([0-9]+)\b`)
 
 	// Strong Revert regex
-	revertCommitRegex = regexp.MustCompile(`(?i)This reverts commit\s+([0-9a-f]{7,40})`)
-	revertSubjectRegex = regexp.MustCompile(`(?i)Revert "(.*)"`)
+	// Matches: "This reverts commit 1fb48f5...", "Revert commit 1fb48f5...", "Revert \"...\""
+	revertCommitRegex  = regexp.MustCompile(`(?i)(?:this\s+reverts\s+commit|revert\s+commit|reverts\s+commit|reverted\s+commit)\s+["']?([0-9a-f]{6,40})["']?`)
+	revertSubjectRegex = regexp.MustCompile(`(?i)Revert\s+"(.*)"`)
 
-	// Strong Regression mention regex (matches "regression in #123", "regression introduced in #123", "caused by #123", "broken by commit <sha>")
-	regressionRegex = regexp.MustCompile(`(?i)(?:regression(?:\s+(?:introduced\s+in|caused\s+by|in))?|broken\s+by|introduced\s+in|introduced\s+by|caused\s+by|fault\s+in)\s+(?:commit\s+([0-9a-f]{7,40})|#([0-9]+)|([0-9a-f]{7,40}))`)
+	// Strong Regression mention regex
+	// Matches: "regression introduced in 1fb48f5", "regression in #16194", "broken by commit 1fb48f5", "caused by #16194"
+	regressionRegex = regexp.MustCompile(`(?i)(?:regression(?:\s+(?:introduced\s+in|caused\s+by|in))?|broken\s+by|introduced\s+in|introduced\s+by|caused\s+by|fault\s+in|broke\s+in)\s+(?:commit\s+([0-9a-f]{6,40})|#([0-9]+)|([0-9a-f]{6,40}))`)
 
 	// Bugfix keywords for commit messages
 	fixKeywordRegex = regexp.MustCompile(`(?i)\b(fix|fixes|fixed|crash|leak|race|panic|null|segfault|deadlock|regression|memory corruption|use-after-free)\b`)
 )
 
-// MatchFixesSHA checks if a message contains a Fixes: tag matching target SHA or prefix.
-func MatchFixesSHA(message, targetSHA string) (string, bool) {
-	if targetSHA == "" || len(targetSHA) < 7 {
+// matchSHAList returns true if shaInMsg matches any candidate target SHA (prefix matching >= 6 chars).
+func matchSHAList(shaInMsg string, targetSHAs []string) bool {
+	if len(shaInMsg) < 6 {
+		return false
+	}
+	shaInMsg = strings.ToLower(shaInMsg)
+
+	for _, target := range targetSHAs {
+		if len(target) < 6 {
+			continue
+		}
+		targetLower := strings.ToLower(target)
+		if strings.HasPrefix(targetLower, shaInMsg) || strings.HasPrefix(shaInMsg, targetLower) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchFixesSHA checks if a message contains a Fixes: tag matching any target SHA or prefix.
+func MatchFixesSHA(message string, targetSHAs []string) (string, bool) {
+	if len(targetSHAs) == 0 {
 		return "", false
 	}
 	matches := fixesSHARegex.FindAllStringSubmatch(message, -1)
 	for _, m := range matches {
-		if len(m) > 1 {
-			shaInMsg := strings.ToLower(m[1])
-			lowerTarget := strings.ToLower(targetSHA)
-			if strings.HasPrefix(lowerTarget, shaInMsg) || strings.HasPrefix(shaInMsg, lowerTarget[:7]) {
-				return m[0], true
-			}
+		if len(m) > 1 && matchSHAList(m[1], targetSHAs) {
+			return m[0], true
 		}
 	}
 	return "", false
@@ -45,6 +64,9 @@ func MatchFixesSHA(message, targetSHA string) (string, bool) {
 
 // MatchFixesPR checks if a message fixes the target PR number.
 func MatchFixesPR(message string, targetPRNumber int) (string, bool) {
+	if targetPRNumber <= 0 {
+		return "", false
+	}
 	matches := fixesPRRegex.FindAllStringSubmatch(message, -1)
 	for _, m := range matches {
 		if len(m) > 1 {
@@ -56,17 +78,13 @@ func MatchFixesPR(message string, targetPRNumber int) (string, bool) {
 	return "", false
 }
 
-// MatchRevert checks if a message reverts the target PR or commit SHA.
-func MatchRevert(message, targetSHA string, targetPRNumber int) (string, bool) {
-	if targetSHA != "" {
+// MatchRevert checks if a message reverts any target SHA or PR number.
+func MatchRevert(message string, targetSHAs []string, targetPRNumber int) (string, bool) {
+	if len(targetSHAs) > 0 {
 		matches := revertCommitRegex.FindAllStringSubmatch(message, -1)
 		for _, m := range matches {
-			if len(m) > 1 {
-				shaInMsg := strings.ToLower(m[1])
-				lowerTarget := strings.ToLower(targetSHA)
-				if strings.HasPrefix(lowerTarget, shaInMsg) || strings.HasPrefix(shaInMsg, lowerTarget[:7]) {
-					return m[0], true
-				}
+			if len(m) > 1 && matchSHAList(m[1], targetSHAs) {
+				return m[0], true
 			}
 		}
 	}
@@ -83,21 +101,20 @@ func MatchRevert(message, targetSHA string, targetPRNumber int) (string, bool) {
 	return "", false
 }
 
-// MatchRegressionMentions checks if a message explicitly cites the PR or SHA as the cause/regression.
-func MatchRegressionMentions(message, targetSHA string, targetPRNumber int) (string, bool) {
+// MatchRegressionMentions checks if a message explicitly cites the PR or any SHA as the cause/regression.
+func MatchRegressionMentions(message string, targetSHAs []string, targetPRNumber int) (string, bool) {
 	matches := regressionRegex.FindAllStringSubmatch(message, -1)
 	for _, m := range matches {
-		if len(m) > 1 && m[1] != "" && targetSHA != "" {
-			shaInMsg := strings.ToLower(m[1])
-			lowerTarget := strings.ToLower(targetSHA)
-			if strings.HasPrefix(lowerTarget, shaInMsg) || strings.HasPrefix(shaInMsg, lowerTarget[:7]) {
-				return m[0], true
-			}
+		if len(m) > 1 && m[1] != "" && matchSHAList(m[1], targetSHAs) {
+			return m[0], true
 		}
-		if len(m) > 2 && m[2] != "" {
+		if len(m) > 2 && m[2] != "" && targetPRNumber > 0 {
 			if num, err := strconv.Atoi(m[2]); err == nil && num == targetPRNumber {
 				return m[0], true
 			}
+		}
+		if len(m) > 3 && m[3] != "" && matchSHAList(m[3], targetSHAs) {
+			return m[0], true
 		}
 	}
 	return "", false

@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -56,7 +59,8 @@ var correlateCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to read input records from %q: %w", inFile, err)
 		}
-		if len(records) == 0 {
+		totalRecords := len(records)
+		if totalRecords == 0 {
 			return fmt.Errorf("no records found in input file %q", inFile)
 		}
 
@@ -113,30 +117,59 @@ var correlateCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to scan git commits from %s: %w", gitDir, err)
 		}
-		fmt.Printf("Scanned %d post-merge commits.\n", len(commits))
+		fmt.Printf("Loaded %d post-merge commits.\n", len(commits))
 
 		corr := correlator.NewCorrelator(gitRepo)
 
-		strongCount := 0
-		mediumCount := 0
-
-		for i := range records {
-			records[i].Retrospective = corr.CorrelatePR(ctx, &records[i].Original, commits, obsEnd)
-			records[i].Provenance.ObservationEnd = obsEnd
-
-			if len(records[i].Retrospective.StrongSignals) > 0 {
-				strongCount++
-			} else if len(records[i].Retrospective.MediumSignals) > 0 {
-				mediumCount++
-			}
+		numWorkers := runtime.NumCPU()
+		if numWorkers < 1 {
+			numWorkers = 4
 		}
+		fmt.Printf("Correlating %d PRs using %d parallel workers...\n", totalRecords, numWorkers)
+
+		var processedCount int64
+		var strongCount int64
+		var mediumCount int64
+
+		jobs := make(chan int, totalRecords)
+		var wg sync.WaitGroup
+
+		for w := 0; w < numWorkers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for idx := range jobs {
+					evidence := corr.CorrelatePR(ctx, &records[idx].Original, commits, obsEnd)
+					records[idx].Retrospective = evidence
+					records[idx].Provenance.ObservationEnd = obsEnd
+
+					if len(evidence.StrongSignals) > 0 {
+						atomic.AddInt64(&strongCount, 1)
+					} else if len(evidence.MediumSignals) > 0 {
+						atomic.AddInt64(&mediumCount, 1)
+					}
+
+					cur := atomic.AddInt64(&processedCount, 1)
+					if cur%100 == 0 || int(cur) == totalRecords {
+						fmt.Printf("Correlated %d/%d PRs (%5.1f%%)...\n",
+							cur, totalRecords, float64(cur)/float64(totalRecords)*100)
+					}
+				}
+			}()
+		}
+
+		for i := 0; i < totalRecords; i++ {
+			jobs <- i
+		}
+		close(jobs)
+		wg.Wait()
 
 		if err := storage.WriteJSONL(outFile, records); err != nil {
 			return fmt.Errorf("failed to write correlated records to %q: %w", outFile, err)
 		}
 
 		fmt.Printf("Successfully correlated %d PRs (%d with strong fix signals, %d with medium signals)\nSaved to %s\n",
-			len(records), strongCount, mediumCount, outFile)
+			totalRecords, strongCount, mediumCount, outFile)
 
 		return nil
 	},

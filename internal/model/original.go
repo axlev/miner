@@ -16,6 +16,7 @@ type OriginalPR struct {
 	BaseSHA           string        `json:"base_sha"`
 	HeadSHA           string        `json:"head_sha"`
 	MergeCommitSHA    string        `json:"merge_commit_sha"`
+	CommitSHAs        []string      `json:"commit_shas,omitempty"`
 	Labels            []string      `json:"labels"`
 	ChangedFiles      []ChangedFile `json:"changed_files"`
 	ChangedFunctions  []string      `json:"changed_functions"`    // Enclosing C functions modified in diff

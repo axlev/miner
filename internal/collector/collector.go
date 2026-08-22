@@ -197,7 +197,11 @@ func (c *Collector) buildOriginalPR(ctx context.Context, owner, repo string, bun
 	}
 
 	var commitMsgs []string
+	var commitSHAs []string
 	for _, commit := range bundle.Commits {
+		if commit.SHA != nil && *commit.SHA != "" {
+			commitSHAs = append(commitSHAs, *commit.SHA)
+		}
 		if commit.Commit != nil && commit.Commit.Message != nil {
 			commitMsgs = append(commitMsgs, *commit.Commit.Message)
 		}
@@ -245,6 +249,7 @@ func (c *Collector) buildOriginalPR(ctx context.Context, owner, repo string, bun
 		BaseSHA:           baseSHA,
 		HeadSHA:           headSHA,
 		MergeCommitSHA:    mergeSHA,
+		CommitSHAs:        commitSHAs,
 		Labels:            labels,
 		ChangedFiles:      changedFiles,
 		ChangedFunctions:  changedFunctions,
