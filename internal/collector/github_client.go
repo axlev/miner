@@ -48,11 +48,11 @@ func (c *GitHubClient) CheckRateLimit(ctx context.Context) (*github.Rate, error)
 
 // RawPRBundle contains the full verbatim API responses for a PR.
 type RawPRBundle struct {
-	PR             *github.PullRequest       `json:"pull_request"`
-	IssueComments  []*github.IssueComment    `json:"issue_comments,omitempty"`
+	PR             *github.PullRequest          `json:"pull_request"`
+	IssueComments  []*github.IssueComment       `json:"issue_comments,omitempty"`
 	ReviewComments []*github.PullRequestComment `json:"review_comments,omitempty"`
-	Commits        []*github.RepositoryCommit `json:"commits,omitempty"`
-	FetchedAt      time.Time                 `json:"fetched_at"`
+	Commits        []*github.RepositoryCommit   `json:"commits,omitempty"`
+	FetchedAt      time.Time                    `json:"fetched_at"`
 }
 
 // FetchPRBundle downloads all relevant metadata and comments for a PR.

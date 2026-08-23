@@ -21,8 +21,8 @@ var (
 
 // Collector coordinates fetching historical PRs, caching, and local git enrichment.
 type Collector struct {
-	client *GitHubClient
-	cache  *storage.DiskCache
+	client  *GitHubClient
+	cache   *storage.DiskCache
 	gitRepo *gitx.Repository
 }
 
@@ -228,33 +228,36 @@ func (c *Collector) buildOriginalPR(ctx context.Context, owner, repo string, bun
 
 	var changedFiles []model.ChangedFile
 	var changedFunctions []string
+	var changedLocations []model.ChangedFunctionLocation
 
-	// If local git clone is available, compute high-accuracy diff stats and C symbols
+	// If local git clone is available, compute high-accuracy merge-base diff stats and C symbols
 	if c.gitRepo != nil && baseSHA != "" && headSHA != "" {
-		if diffRes, err := c.gitRepo.DiffBetween(ctx, baseSHA, headSHA); err == nil {
+		if diffRes, err := c.gitRepo.DiffPR(ctx, baseSHA, headSHA); err == nil {
 			changedFiles = diffRes.Files
 			changedFunctions = diffRes.Symbols
+			changedLocations = diffRes.FunctionLocations
 		}
 	}
 
 	return model.OriginalPR{
-		Repository:        fullName,
-		Number:            pr.GetNumber(),
-		Title:             pr.GetTitle(),
-		Body:              pr.GetBody(),
-		Author:            pr.GetUser().GetLogin(),
-		CreatedAt:         pr.GetCreatedAt().Time,
-		MergedAt:          pr.GetMergedAt().Time,
-		BaseRef:           pr.GetBase().GetRef(),
-		BaseSHA:           baseSHA,
-		HeadSHA:           headSHA,
-		MergeCommitSHA:    mergeSHA,
-		CommitSHAs:        commitSHAs,
-		Labels:            labels,
-		ChangedFiles:      changedFiles,
-		ChangedFunctions:  changedFunctions,
-		PreMergeIssueRefs: preMergeIssues,
-		CommitCount:       pr.GetCommits(),
-		CommitMessages:    commitMsgs,
+		Repository:               fullName,
+		Number:                   pr.GetNumber(),
+		Title:                    pr.GetTitle(),
+		Body:                     pr.GetBody(),
+		Author:                   pr.GetUser().GetLogin(),
+		CreatedAt:                pr.GetCreatedAt().Time,
+		MergedAt:                 pr.GetMergedAt().Time,
+		BaseRef:                  pr.GetBase().GetRef(),
+		BaseSHA:                  baseSHA,
+		HeadSHA:                  headSHA,
+		MergeCommitSHA:           mergeSHA,
+		CommitSHAs:               commitSHAs,
+		Labels:                   labels,
+		ChangedFiles:             changedFiles,
+		ChangedFunctions:         changedFunctions,
+		ChangedFunctionLocations: changedLocations,
+		PreMergeIssueRefs:        preMergeIssues,
+		CommitCount:              pr.GetCommits(),
+		CommitMessages:           commitMsgs,
 	}
 }

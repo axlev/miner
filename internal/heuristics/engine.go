@@ -12,9 +12,9 @@ import (
 
 // Engine runs the pre-merge stateful/distributed heuristic evaluation.
 type Engine struct {
-	cfg          *config.HeuristicsConfig
-	pathRegexes  []compiledPathRule
-	kwRegexes    []compiledKeywordRule
+	cfg         *config.HeuristicsConfig
+	pathRegexes []compiledPathRule
+	kwRegexes   []compiledKeywordRule
 }
 
 type compiledPathRule struct {
