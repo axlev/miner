@@ -29,6 +29,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
 
 	RootCmd.AddCommand(collectCmd)
+	RootCmd.AddCommand(rebuildRawCmd)
 	RootCmd.AddCommand(correlateCmd)
 	RootCmd.AddCommand(scoreCmd)
 	RootCmd.AddCommand(exportCmd)
