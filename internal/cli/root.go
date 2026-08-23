@@ -31,6 +31,7 @@ func init() {
 	RootCmd.AddCommand(collectCmd)
 	RootCmd.AddCommand(rebuildRawCmd)
 	RootCmd.AddCommand(correlateCmd)
+	RootCmd.AddCommand(finalizeBatchesCmd)
 	RootCmd.AddCommand(scoreCmd)
 	RootCmd.AddCommand(exportCmd)
 	RootCmd.AddCommand(inspectCmd)

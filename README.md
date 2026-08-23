@@ -88,7 +88,33 @@ go run ./cmd/miner collect \
 ```
 
 #### Step 2: Retrospective Correlation
-Scans post-merge Git commit log and issues up to `--observation-end` for `Fixes: <SHA>`, reverts, and regression citations:
+Scans post-merge Git commit history up to `--observation-end` for `Fixes: <SHA>`, reverts, regression citations, and code-line relationships.
+
+For research runs, use resumable batches. Each batch is an immutable JSONL file with a SHA-256 sidecar; caches are released between batches to bound memory. A matching `run.json` prevents accidental resume with a different input, cutoff, configuration, repository HEAD, or partition:
+
+```bash
+go run ./cmd/miner correlate \
+  --in ./data/raw_prs.jsonl \
+  --git-dir ./data/repos/FRRouting/frr.git \
+  --observation-end 2026-08-21T00:00:00Z \
+  --batch-dir ./data/correlation_batches_20260821 \
+  --batch-size 50 \
+  --workers 4
+```
+
+Rerun the same command after interruption. Verified completed batches are skipped. Batch files remain the canonical checkpoint artifacts and can be retained indefinitely.
+
+The existing scorer currently accepts one JSONL file. Only when that convenience file is needed, validate complete coverage and create it without deleting the batches:
+
+```bash
+go run ./cmd/miner finalize-batches \
+  --in ./data/raw_prs.jsonl \
+  --batch-dir ./data/correlation_batches_20260821 \
+  --out ./data/correlated.jsonl
+```
+
+For small inputs, single-file correlation remains available:
+
 ```bash
 go run ./cmd/miner correlate \
   --in ./data/raw_prs.jsonl \
