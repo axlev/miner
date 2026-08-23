@@ -18,6 +18,10 @@ type Repository struct {
 
 // OpenRepository returns a Repository handle for the given directory.
 func OpenRepository(repoDir string) *Repository {
+	dotGit := filepath.Join(repoDir, ".git")
+	if fi, err := os.Stat(dotGit); err == nil && fi.IsDir() {
+		return &Repository{RepoDir: dotGit}
+	}
 	return &Repository{RepoDir: repoDir}
 }
 
@@ -71,11 +75,11 @@ func (r *Repository) HeadSHA(ctx context.Context) (string, error) {
 
 // CommitLogEntry represents a parsed git commit.
 type CommitLogEntry struct {
-	SHA       string
-	Date      time.Time
-	Author    string
-	Subject   string
-	Body      string
+	SHA         string
+	Date        time.Time
+	Author      string
+	Subject     string
+	Body        string
 	FullMessage string
 }
 
@@ -142,4 +146,97 @@ func (r *Repository) CommitsAfter(ctx context.Context, t0 time.Time, observation
 	}
 
 	return entries, nil
+}
+
+// CommitDiffSummary captures the parsed diff characteristics of a single commit.
+type CommitDiffSummary struct {
+	SHA          string
+	ChangedFiles []string
+	FileSymbols  map[string][]string // relativePath -> []functionNames
+	RawDiff      string
+	PatchID      string
+	IsMerge      bool
+}
+
+// CommitDiff inspects a single commit and extracts its changed files, C symbols, patch ID, and merge status.
+func (r *Repository) CommitDiff(ctx context.Context, sha string) (*CommitDiffSummary, error) {
+	if sha == "" {
+		return nil, fmt.Errorf("empty sha")
+	}
+
+	// 1. Check parent count to determine if it's a merge commit
+	cmdCtx1, cancel1 := context.WithTimeout(ctx, GitCommandTimeout)
+	parentsCmd := exec.CommandContext(cmdCtx1, "git", "--git-dir", r.RepoDir, "rev-list", "--parents", "-n", "1", sha)
+	parentsOut, err := parentsCmd.Output()
+	cancel1()
+	isMerge := false
+	if err == nil {
+		parents := strings.Fields(string(parentsOut))
+		if len(parents) > 2 {
+			isMerge = true
+		}
+	}
+
+	// Merge commits are not treated as atomic single patches
+	if isMerge {
+		return &CommitDiffSummary{
+			SHA:          sha,
+			ChangedFiles: nil,
+			FileSymbols:  nil,
+			RawDiff:      "",
+			PatchID:      "sha:" + sha,
+			IsMerge:      true,
+		}, nil
+	}
+
+	// 2. Fetch patch-only output for C symbol extraction and patch identity
+	cmdCtx2, cancel2 := context.WithTimeout(ctx, GitCommandTimeout)
+	patchCmd := exec.CommandContext(cmdCtx2, "git", "--git-dir", r.RepoDir, "show", "--format=", "-p", "-M", sha)
+	patchOut, err := patchCmd.Output()
+	cancel2()
+	if err != nil {
+		return nil, fmt.Errorf("git show -p failed for %s: %w", sha, err)
+	}
+	patchText := string(patchOut)
+	parsedSymbols := ExtractFileHunkSymbols(patchText)
+
+	// 3. Fetch numstat-only output for changed paths
+	cmdCtx3, cancel3 := context.WithTimeout(ctx, GitCommandTimeout)
+	numstatCmd := exec.CommandContext(cmdCtx3, "git", "--git-dir", r.RepoDir, "show", "--format=", "--numstat", "-M", sha)
+	numstatOut, err := numstatCmd.Output()
+	cancel3()
+	if err != nil {
+		return nil, fmt.Errorf("git show --numstat failed for %s: %w", sha, err)
+	}
+	numstatText := string(numstatOut)
+	files := ParseNumstat(numstatText)
+
+	var changedPaths []string
+	for _, f := range files {
+		changedPaths = append(changedPaths, f.Path)
+	}
+
+	// 4. Compute stable patch ID via git patch-id
+	cmdCtx4, cancel4 := context.WithTimeout(ctx, GitCommandTimeout)
+	patchIDCmd := exec.CommandContext(cmdCtx4, "git", "--git-dir", r.RepoDir, "patch-id", "--stable")
+	patchIDCmd.Stdin = strings.NewReader(patchText)
+	patchIDOut, patchIDErr := patchIDCmd.Output()
+	cancel4()
+	if patchIDErr != nil {
+		return nil, fmt.Errorf("git patch-id failed for %s: %w", sha, patchIDErr)
+	}
+	parts := strings.Fields(string(patchIDOut))
+	if len(parts) == 0 || parts[0] == "" {
+		return nil, fmt.Errorf("git patch-id returned empty output for %s", sha)
+	}
+	patchID := parts[0]
+
+	return &CommitDiffSummary{
+		SHA:          sha,
+		ChangedFiles: changedPaths,
+		FileSymbols:  parsedSymbols.PathSymbols,
+		RawDiff:      patchText,
+		PatchID:      patchID,
+		IsMerge:      false,
+	}, nil
 }
