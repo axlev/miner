@@ -36,6 +36,8 @@ func init() {
 	RootCmd.AddCommand(exportCmd)
 	RootCmd.AddCommand(inspectCmd)
 	RootCmd.AddCommand(statsCmd)
+	RootCmd.AddCommand(retrospectiveExportCmd)
+	RootCmd.AddCommand(prospectiveExportCmd)
 }
 
 // Execute runs the root CLI command.

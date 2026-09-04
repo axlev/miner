@@ -24,6 +24,7 @@ go.work
 .vscode/
 *.swp
 *~
+.antigravity/
 
 # Environment files
 .env
@@ -32,3 +33,6 @@ go.work
 # Data and output directories
 data/
 output/
+
+miner
+rebuilt_20260821/

@@ -167,6 +167,45 @@ go run ./cmd/miner export \
   --out ./output/frr_2024_benchmark_candidates.jsonl
 ```
 
+#### Export Retrospective Evidence for Adjudication
+
+Materialize every retrospective signal, commit relationship, candidate commit, and
+available patch for one PR. This output is retrospective-only and is not used by
+prospective benchmark conditions.
+
+```bash
+go run ./cmd/miner retrospective-export \
+  --input ./output/frr_2024_benchmark_candidates.jsonl \
+  --pr 15624 \
+  --repo ~/frr \
+  --out ~/benchmarks/cases/15624/retrospective
+```
+
+The output contains `source_record.json`, normalized signal and relationship JSON,
+one metadata file and canonical patch per candidate commit, logical-patch manifests,
+and a top-level provenance and artifact-hash manifest. Missing Git objects are
+recorded and do not abort the export.
+
+#### Export Prospective Reviewer Metadata
+
+Create a new case directory with a strict reviewer-facing metadata allowlist and
+separate evaluator-only inputs:
+
+```bash
+go run ./cmd/miner prospective-export \
+  --input ./rebuilt_20260821/output/frr_2024_benchmark_candidates.jsonl \
+  --cache-file ./rebuilt_20260821/cache/github/FRRouting_frr/prs/pr_15624.json \
+  --pr 15624 \
+  --cutoff 2024-04-10T05:22:26Z \
+  --case-id case-15624 \
+  --out ./rebuilt_20260821/cases/case-15624
+```
+
+Only `prospective/metadata.json` is reviewer-facing. The complete selected
+correlated record and temporal reconstruction audit are placed under
+`evaluator-only/`. The destination must not already exist, and validation failures
+leave no partial case directory.
+
 ---
 
 ## Data Schema Reference

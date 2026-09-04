@@ -52,7 +52,10 @@ type RawPRBundle struct {
 	IssueComments  []*github.IssueComment       `json:"issue_comments,omitempty"`
 	ReviewComments []*github.PullRequestComment `json:"review_comments,omitempty"`
 	Commits        []*github.RepositoryCommit   `json:"commits,omitempty"`
-	FetchedAt      time.Time                    `json:"fetched_at"`
+	IssueEvents    []*github.IssueEvent         `json:"issue_events,omitempty"`
+	// IssueEventsComplete is true only when every issue event page was fetched.
+	IssueEventsComplete bool      `json:"issue_events_complete,omitempty"`
+	FetchedAt           time.Time `json:"fetched_at"`
 }
 
 // FetchPRBundle downloads all relevant metadata and comments for a PR.
@@ -70,11 +73,32 @@ func (c *GitHubClient) FetchPRBundle(ctx context.Context, owner, repo string, pr
 	commitOpt := &github.ListOptions{PerPage: 100}
 	commits, _, _ := c.Client.PullRequests.ListCommits(ctx, owner, repo, prNumber, commitOpt)
 
+	// Title rename events are the only provider history that can reconstruct an
+	// earlier title. Completeness is explicit so consumers fail closed.
+	var issueEvents []*github.IssueEvent
+	eventsComplete := true
+	eventOpts := &github.ListOptions{PerPage: 100}
+	for {
+		events, eventResp, eventErr := c.Client.Issues.ListIssueEvents(ctx, owner, repo, prNumber, eventOpts)
+		if eventErr != nil {
+			eventsComplete = false
+			issueEvents = nil
+			break
+		}
+		issueEvents = append(issueEvents, events...)
+		if eventResp.NextPage == 0 {
+			break
+		}
+		eventOpts.Page = eventResp.NextPage
+	}
+
 	bundle := &RawPRBundle{
-		PR:            pr,
-		IssueComments: issueComments,
-		Commits:       commits,
-		FetchedAt:     time.Now().UTC(),
+		PR:                  pr,
+		IssueComments:       issueComments,
+		Commits:             commits,
+		IssueEvents:         issueEvents,
+		IssueEventsComplete: eventsComplete,
+		FetchedAt:           time.Now().UTC(),
 	}
 
 	_ = resp // used for headers if needed
