@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"pr-analysis/internal/config"
-	"pr-analysis/internal/model"
+	"miner/internal/config"
+	"miner/internal/model"
 )
 
 // Engine runs the pre-merge stateful/distributed heuristic evaluation.

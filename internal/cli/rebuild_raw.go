@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"pr-analysis/internal/collector"
-	"pr-analysis/internal/config"
-	"pr-analysis/internal/storage"
+	"miner/internal/collector"
+	"miner/internal/config"
+	"miner/internal/storage"
 )
 
 var (

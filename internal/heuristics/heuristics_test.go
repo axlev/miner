@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"pr-analysis/internal/config"
-	"pr-analysis/internal/model"
+	"miner/internal/config"
+	"miner/internal/model"
 )
 
 func TestEvaluateStateful(t *testing.T) {

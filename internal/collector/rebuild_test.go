@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/google/go-github/v62/github"
-	"pr-analysis/internal/model"
-	"pr-analysis/internal/storage"
+	"miner/internal/model"
+	"miner/internal/storage"
 )
 
 func setupTestGitRepo(t *testing.T) (string, func(args ...string) string) {

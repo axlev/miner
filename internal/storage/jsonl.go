@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"pr-analysis/internal/model"
+	"miner/internal/model"
 )
 
 // WriteJSONL writes candidate records to a JSONL file with deterministic sorting by PR number.

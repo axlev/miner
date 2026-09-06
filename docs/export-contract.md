@@ -14,7 +14,7 @@ The legacy `export` output is a research/candidate artifact, not a prospective b
 
 ## 1. Responsibilities and execution flow
 
-The executable entry point is `main.go`, which calls `cli.Execute()`.
+The executable entry point is `cmd/miner/main.go`, which calls `cli.Execute()`.
 
 The implemented workflow is:
 
@@ -53,7 +53,7 @@ The maintained run script executes `collect -> correlate -> finalize-batches -> 
 
 ## 2. CLI and package boundaries
 
-The actual executable is the repository-root `main` package. The module is named `pr-analysis`. README commands referring to `./cmd/miner` are stale; that directory does not exist. `run_frr_2024.sh` correctly builds the repository root.
+The module is named `miner`. The sole executable is `cmd/miner`, matching every `README.md` usage example. A duplicate root `main.go` (byte-identical, tracked since the initial commit) existed until 2026-09-06 and has been removed; `run_frr_2024.sh` was updated to build `./cmd/miner` accordingly. The earlier claim in this report that `./cmd/miner` "does not exist" was incorrect.
 
 Registered commands:
 

@@ -6,9 +6,9 @@ import (
 	"sort"
 
 	"github.com/spf13/cobra"
-	"pr-analysis/internal/batchstore"
-	"pr-analysis/internal/model"
-	"pr-analysis/internal/storage"
+	"miner/internal/batchstore"
+	"miner/internal/model"
+	"miner/internal/storage"
 )
 
 var (

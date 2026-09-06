@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"pr-analysis/internal/model"
-	"pr-analysis/internal/storage"
+	"miner/internal/model"
+	"miner/internal/storage"
 )
 
 const SchemaVersion = "1.0.0"

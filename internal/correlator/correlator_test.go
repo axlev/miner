@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"pr-analysis/internal/gitx"
-	"pr-analysis/internal/model"
+	"miner/internal/gitx"
+	"miner/internal/model"
 )
 
 func TestClassifyEvidenceScope(t *testing.T) {

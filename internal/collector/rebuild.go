@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"pr-analysis/internal/config"
-	"pr-analysis/internal/gitx"
-	"pr-analysis/internal/model"
-	"pr-analysis/internal/storage"
+	"miner/internal/config"
+	"miner/internal/gitx"
+	"miner/internal/model"
+	"miner/internal/storage"
 )
 
 // RebuildRawOptions defines parameters for offline PR reconstruction.

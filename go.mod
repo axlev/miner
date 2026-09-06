@@ -1,4 +1,4 @@
-module pr-analysis
+module miner
 
 go 1.25.0
 

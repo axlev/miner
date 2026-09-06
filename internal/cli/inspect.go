@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"pr-analysis/internal/storage"
+	"miner/internal/storage"
 )
 
 var (

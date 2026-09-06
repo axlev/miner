@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"pr-analysis/internal/batchstore"
-	"pr-analysis/internal/config"
-	"pr-analysis/internal/correlator"
-	"pr-analysis/internal/gitx"
-	"pr-analysis/internal/model"
-	"pr-analysis/internal/storage"
+	"miner/internal/batchstore"
+	"miner/internal/config"
+	"miner/internal/correlator"
+	"miner/internal/gitx"
+	"miner/internal/model"
+	"miner/internal/storage"
 )
 
 var (

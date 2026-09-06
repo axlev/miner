@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"pr-analysis/internal/model"
+	"miner/internal/model"
 )
 
 // WriteMarkdownTable exports candidate records as a human-readable GitHub-flavored Markdown table.

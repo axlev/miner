@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"pr-analysis/internal/gitx"
+	"miner/internal/gitx"
 )
 
 const SchemaVersion = "1.0.0"

@@ -22,7 +22,7 @@ Requires **Go 1.22+** and local `git`.
 ```bash
 # Clone and build binary
 git clone <this-repo>
-cd pr-analysis
+cd miner
 
 # Build miner binary
 go build -o bin/miner.exe ./cmd/miner

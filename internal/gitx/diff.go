@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"pr-analysis/internal/model"
+	"miner/internal/model"
 )
 
 // DiffResult holds the extracted file modifications, diff text, and symbols.

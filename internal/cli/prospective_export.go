@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"pr-analysis/internal/prospectiveexport"
+	"miner/internal/prospectiveexport"
 )
 
 var prospectiveExportFlags struct {

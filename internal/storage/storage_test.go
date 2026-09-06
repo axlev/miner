@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"pr-analysis/internal/model"
+	"miner/internal/model"
 )
 
 func TestJSONLReadWrite(t *testing.T) {

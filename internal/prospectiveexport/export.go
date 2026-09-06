@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v62/github"
-	"pr-analysis/internal/collector"
+	"miner/internal/collector"
 )
 
 const SchemaVersion = "1.0.0"

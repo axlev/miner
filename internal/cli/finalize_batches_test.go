@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"pr-analysis/internal/batchstore"
-	"pr-analysis/internal/gitx"
-	"pr-analysis/internal/model"
-	"pr-analysis/internal/storage"
+	"miner/internal/batchstore"
+	"miner/internal/gitx"
+	"miner/internal/model"
+	"miner/internal/storage"
 )
 
 func TestBatchedCorrelationResumesAndRecoversSidecar(t *testing.T) {

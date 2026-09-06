@@ -4,9 +4,9 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"pr-analysis/internal/config"
-	"pr-analysis/internal/heuristics"
-	"pr-analysis/internal/storage"
+	"miner/internal/config"
+	"miner/internal/heuristics"
+	"miner/internal/storage"
 )
 
 var (

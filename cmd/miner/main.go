@@ -1,7 +1,7 @@
 package main
 
 import (
-	"pr-analysis/internal/cli"
+	"miner/internal/cli"
 )
 
 func main() {

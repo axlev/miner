@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v62/github"
-	"pr-analysis/internal/collector"
+	"miner/internal/collector"
 )
 
 var cutoff = time.Date(2024, 4, 10, 5, 22, 26, 0, time.UTC)

@@ -43,7 +43,7 @@ echo "Miner commit: $(cat "$RUN_ROOT/miner_commit.txt")"
 echo "Observation cutoff: $OBSERVATION_END"
 
 mkdir -p bin
-go build -o bin/miner .
+go build -o bin/miner ./cmd/miner
 
 echo "===== COLLECT ====="
 ./bin/miner collect \

@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"pr-analysis/internal/model"
+	"miner/internal/model"
 )
 
 // NormalizeSubstantiveLine normalizes a source code line and filters out low-information structural lines.

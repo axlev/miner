@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"pr-analysis/internal/retrospectiveexport"
+	"miner/internal/retrospectiveexport"
 )
 
 var retrospectiveExportFlags struct {
