@@ -9,8 +9,8 @@ import (
 )
 
 var prospectiveExportFlags struct {
-	input, cacheFile, cutoff, caseID, out string
-	pr                                    int
+	input, cacheFile, repo, cutoff, caseID, prospectiveOut, evaluatorOut string
+	pr                                                                   int
 }
 
 var prospectiveExportCmd = &cobra.Command{
@@ -22,10 +22,20 @@ var prospectiveExportCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("invalid --cutoff (RFC3339 required): %w", err)
 		}
-		if err := prospectiveexport.Export(prospectiveexport.Options{CorrelatedInput: f.input, CacheFile: f.cacheFile, PR: f.pr, Cutoff: cutoff, CaseID: f.caseID, Out: f.out}); err != nil {
+		opt := prospectiveexport.Options{
+			CorrelatedInput: f.input,
+			CacheFile:       f.cacheFile,
+			Repo:            f.repo,
+			PR:              f.pr,
+			Cutoff:          cutoff,
+			CaseID:          f.caseID,
+			ProspectiveOut:  f.prospectiveOut,
+			EvaluatorOut:    f.evaluatorOut,
+		}
+		if err := prospectiveexport.Export(cmd.Context(), opt); err != nil {
 			return err
 		}
-		fmt.Printf("Exported prospective case %s to %s\n", f.caseID, f.out)
+		fmt.Printf("Exported prospective case to %s (evaluator-only artifacts at %s)\n", f.prospectiveOut, f.evaluatorOut)
 		return nil
 	},
 }
@@ -34,11 +44,13 @@ func init() {
 	f := &prospectiveExportFlags
 	prospectiveExportCmd.Flags().StringVarP(&f.input, "input", "i", "", "Evaluator correlated JSONL input")
 	prospectiveExportCmd.Flags().StringVar(&f.cacheFile, "cache-file", "", "Cached provider PR bundle")
+	prospectiveExportCmd.Flags().StringVar(&f.repo, "repo", "", "Local Git repository used to resolve the canonical change patch")
 	prospectiveExportCmd.Flags().IntVarP(&f.pr, "pr", "p", 0, "PR number to select")
 	prospectiveExportCmd.Flags().StringVar(&f.cutoff, "cutoff", "", "Benchmark cutoff timestamp (RFC3339)")
-	prospectiveExportCmd.Flags().StringVar(&f.caseID, "case-id", "", "Neutral case identifier")
-	prospectiveExportCmd.Flags().StringVarP(&f.out, "out", "o", "", "New case output directory")
-	for _, name := range []string{"input", "cache-file", "pr", "cutoff", "case-id", "out"} {
+	prospectiveExportCmd.Flags().StringVar(&f.caseID, "case-id", "", "Case identifier override; a neutral opaque ID is generated when omitted")
+	prospectiveExportCmd.Flags().StringVar(&f.prospectiveOut, "prospective-out", "", "New output directory for the engine-visible prospective case")
+	prospectiveExportCmd.Flags().StringVar(&f.evaluatorOut, "evaluator-out", "", "New output directory for evaluator-only artifacts")
+	for _, name := range []string{"input", "cache-file", "repo", "pr", "cutoff", "prospective-out", "evaluator-out"} {
 		_ = prospectiveExportCmd.MarkFlagRequired(name)
 	}
 }

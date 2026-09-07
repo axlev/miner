@@ -188,29 +188,57 @@ recorded and do not abort the export.
 
 #### Export Prospective Reviewer Metadata
 
-Create a new case directory with a strict reviewer-facing metadata allowlist and
-separate evaluator-only inputs:
+Create a versioned, hash-verified prospective case in one caller-supplied root, and
+the corresponding evaluator-only artifacts in a separate root:
 
 ```bash
 go run ./cmd/miner prospective-export \
   --input ./rebuilt_20260821/output/frr_2024_benchmark_candidates.jsonl \
   --cache-file ./rebuilt_20260821/cache/github/FRRouting_frr/prs/pr_15624.json \
+  --repo ~/frr \
   --pr 15624 \
   --cutoff 2024-04-10T05:22:26Z \
-  --case-id case-15624 \
-  --out ./rebuilt_20260821/cases/case-15624
+  --prospective-out ./rebuilt_20260821/prospective/<generated-case-id> \
+  --evaluator-out ./rebuilt_20260821/evaluator-only/case-15624
 ```
 
-Only `prospective/metadata.json` is reviewer-facing. The complete selected
-correlated record and temporal reconstruction audit are placed under
-`evaluator-only/`. The destination must not already exist, and validation failures
-leave no partial case directory.
+`--case-id` is optional; when omitted, the miner generates an opaque identifier
+(`case-<16 hex chars>`, a SHA-256 of repository/PR/cutoff) instead of a caller-supplied,
+PR-derived string like `case-15624`, so the directory name itself does not disclose the
+PR number. The command prints the generated ID.
+
+`--prospective-out` receives exactly `manifest.json`, `metadata.json`, and
+`change.patch` — the complete engine-visible package, safe to hand to
+`benchmark-engine` recursively since it contains no evaluator-only files.
+`manifest.json` conforms to `schemas/prospective-manifest.schema.json`: it carries
+the resolved `comparison_base_sha` (the local Git merge-base of the PR's base and
+head, not merely copied from the cached provider response), `head_sha`, and a
+SHA-256 for every other artifact in the directory. `change.patch` is the canonical
+`git diff` from that merge-base to head. `metadata.json` remains the same six-field
+reviewer allowlist (`schemas/reviewer-metadata.schema.json`) and never contains
+`head_sha`/`comparison_base_sha`.
+
+`--evaluator-out` receives `correlated-report.json` (the complete selected
+correlated record) and `metadata-export-audit.json` (per-field provenance for every
+metadata.json decision).
+
+The cache bundle's PR number, repository, and base/head SHAs must match the
+selected correlated record's; a mismatch fails the export closed rather than
+silently combining identities from two different inputs. Neither output root may
+already exist, and both roots are fully built and validated before either is
+published, so a failure never leaves a partial or mixed case behind.
 
 ---
 
 ## Data Schema Reference
 
-Every record in the output JSONL file adheres to the following typed schema:
+Every record in the output JSONL file adheres to the following typed schema.
+`provenance.miner_version` is resolved at build time from Go's embedded VCS metadata
+(the actual Git revision the binary was built from, suffixed `-dirty` for an
+uncommitted tree, or `unknown` if no VCS revision was embedded — e.g. outside a Git
+checkout, a shallow clone, or `-buildvcs=false`) rather than a fixed string; the
+value below is illustrative only. See also `schemas/` for the
+prospective-case, reviewer-metadata, and oracle (retrospective) manifest contracts.
 
 ```json
 {

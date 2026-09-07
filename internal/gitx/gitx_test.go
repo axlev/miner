@@ -219,6 +219,82 @@ func TestDiffPR_MergeBaseFixture(t *testing.T) {
 	_ = baseCommit
 }
 
+func TestMergeBaseAndCanonicalChangePatch(t *testing.T) {
+	tempDir := t.TempDir()
+
+	runGit := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tempDir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git command failed: git %v: %s (%v)", args, string(out), err)
+		}
+		return string(out)
+	}
+
+	runGit("init")
+	runGit("config", "user.name", "Test")
+	runGit("config", "user.email", "test@example.com")
+
+	os.WriteFile(filepath.Join(tempDir, "base.c"), []byte("int base() { return 0; }\n"), 0644)
+	runGit("add", "base.c")
+	runGit("commit", "-m", "initial base commit")
+	baseCommit := strings.TrimSpace(runGit("rev-parse", "HEAD"))
+
+	runGit("checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(tempDir, "feature.c"), []byte("int feature() { return 1; }\n"), 0644)
+	runGit("add", "feature.c")
+	runGit("commit", "-m", "feature commit")
+	featureHead := strings.TrimSpace(runGit("rev-parse", "HEAD"))
+
+	runGit("checkout", "master")
+	os.WriteFile(filepath.Join(tempDir, "upstream1.c"), []byte("int u1() { return 0; }\n"), 0644)
+	runGit("add", "upstream1.c")
+	runGit("commit", "-m", "upstream 1")
+	masterHead := strings.TrimSpace(runGit("rev-parse", "HEAD"))
+
+	repo := OpenRepository(filepath.Join(tempDir, ".git"))
+	ctx := context.Background()
+
+	mergeBase, err := repo.MergeBase(ctx, masterHead, featureHead)
+	if err != nil {
+		t.Fatalf("MergeBase failed: %v", err)
+	}
+	if mergeBase != baseCommit {
+		t.Fatalf("expected merge-base %s, got %s", baseCommit, mergeBase)
+	}
+
+	patch, resolvedBase, err := repo.CanonicalChangePatch(ctx, masterHead, featureHead)
+	if err != nil {
+		t.Fatalf("CanonicalChangePatch failed: %v", err)
+	}
+	if resolvedBase != baseCommit {
+		t.Fatalf("expected resolved base %s, got %s", baseCommit, resolvedBase)
+	}
+	patchText := string(patch)
+	if !strings.Contains(patchText, "feature.c") {
+		t.Fatalf("expected patch to contain feature.c: %s", patchText)
+	}
+	if strings.Contains(patchText, "upstream1.c") {
+		t.Fatalf("canonical patch leaked upstream-only content: %s", patchText)
+	}
+
+	// Determinism: identical inputs must produce byte-identical output.
+	patch2, resolvedBase2, err := repo.CanonicalChangePatch(ctx, masterHead, featureHead)
+	if err != nil {
+		t.Fatalf("CanonicalChangePatch (2nd run) failed: %v", err)
+	}
+	if resolvedBase2 != resolvedBase || string(patch2) != patchText {
+		t.Fatal("CanonicalChangePatch is not deterministic across repeated calls")
+	}
+}
+
 func TestDiffPR_PR16194_ExactPaths(t *testing.T) {
 	// Look for FRR git repository clone in local data directories
 	repoDirs := []string{

@@ -86,6 +86,31 @@ func (r *Repository) DiffPR(ctx context.Context, baseSHA, headSHA string) (*Diff
 	}, nil
 }
 
+// MergeBase resolves the merge-base commit between two refs.
+func (r *Repository) MergeBase(ctx context.Context, a, b string) (string, error) {
+	out, err := r.gitOutput(ctx, "merge-base", a, b)
+	if err != nil {
+		return "", fmt.Errorf("git merge-base failed for %s %s: %w", a, b, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// CanonicalChangePatch resolves the merge-base of baseSHA and headSHA and returns the
+// unambiguous unified diff from that merge-base to headSHA, matching engine-runner's
+// expected comparison semantics (equivalent to `git diff base...head` but with the
+// resolved merge-base SHA available to the caller for the public manifest).
+func (r *Repository) CanonicalChangePatch(ctx context.Context, baseSHA, headSHA string) (patch []byte, mergeBase string, err error) {
+	mergeBase, err = r.MergeBase(ctx, baseSHA, headSHA)
+	if err != nil {
+		return nil, "", err
+	}
+	patch, err = r.gitOutput(ctx, "diff", "--no-ext-diff", "-M", "--binary", "--full-index", mergeBase, headSHA, "--")
+	if err != nil {
+		return nil, mergeBase, fmt.Errorf("git diff failed for %s..%s: %w", mergeBase, headSHA, err)
+	}
+	return patch, mergeBase, nil
+}
+
 // ParseNumstat parses output of `git diff --numstat` or `git show --numstat`.
 func ParseNumstat(output string) []model.ChangedFile {
 	var files []model.ChangedFile

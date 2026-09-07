@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v62/github"
+	"miner/internal/buildinfo"
 	"miner/internal/config"
 	"miner/internal/gitx"
 	"miner/internal/model"
@@ -139,7 +140,7 @@ func (c *Collector) CollectMinedPRs(ctx context.Context, opts CollectOptions, cf
 		orig := c.buildOriginalPR(ctx, opts.Owner, opts.Repo, bundle)
 
 		provenance := model.Provenance{
-			MinerVersion:      "v1.0.0",
+			MinerVersion:      buildinfo.MinerVersion(),
 			ConfigHash:        cfg.ConfigHash,
 			HarvestedAt:       time.Now().UTC(),
 			ObservationEnd:    opts.ObservationEnd,

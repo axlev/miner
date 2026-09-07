@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miner.local/schemas/oracle-manifest.schema.json",
+  "title": "Retrospective/oracle case manifest (manifest.json)",
+  "description": "Top-level provenance and artifact-hash manifest written by `miner retrospective-export` at the root of a retrospective evidence directory. This is the miner's current 'oracle' bundle descriptor: it accompanies retrospective signals, commit relationships, materialized commits, and canonical patches used for evaluator/adjudication purposes, and it must never be supplied to a prospective reviewer or engine (docs/export-contract.md §7 risk 1, AGENTS.md architecture boundaries). Matches the unexported `manifest` struct in internal/retrospectiveexport/export.go exactly. No separate 'oracle-export' command exists yet; this schema documents the current retrospective-export manifest, which is the closest existing analog, pending a dedicated oracle-bundle command (docs/export-contract.md §9-§10 is silent on this; treat this schema as the current-behavior contract, not a target one).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "original_pr_number",
+    "original_head_sha",
+    "original_merge_commit_sha",
+    "input_file",
+    "input_record_hash",
+    "export_timestamp",
+    "exporter_version",
+    "repository_path",
+    "source_miner_provenance",
+    "signal_counts",
+    "unique_source_ref_count",
+    "materialized_commit_count",
+    "missing_commit_count",
+    "logical_patch_ids",
+    "command",
+    "patch_policy",
+    "files"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "original_pr_number": { "type": "integer", "minimum": 1 },
+    "original_head_sha": { "type": "string" },
+    "original_merge_commit_sha": { "type": "string" },
+    "input_file": { "type": "string", "description": "Path to the correlated JSONL the record was selected from; provenance only, not portable across machines." },
+    "input_record_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the selected record's exact source_record.json bytes." },
+    "export_timestamp": { "type": "string", "format": "date-time" },
+    "exporter_version": { "type": "string" },
+    "repository_path": { "type": "string" },
+    "repository_identity": { "type": "string", "description": "original.repository from the selected record, when present." },
+    "repository_head": { "type": "string", "description": "Local repository HEAD SHA at export time, when resolvable." },
+    "observation_end": { "description": "Raw provenance.observation_end from the selected record, when present." },
+    "harvested_at": { "description": "Raw provenance.harvested_at from the selected record, when present." },
+    "source_miner_provenance": { "type": "object", "description": "The selected record's complete provenance block, copied verbatim." },
+    "signal_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strong", "medium", "weak", "total"],
+      "properties": {
+        "strong": { "type": "integer", "minimum": 0 },
+        "medium": { "type": "integer", "minimum": 0 },
+        "weak": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "unique_source_ref_count": { "type": "integer", "minimum": 0 },
+    "materialized_commit_count": { "type": "integer", "minimum": 0 },
+    "missing_commit_count": { "type": "integer", "minimum": 0 },
+    "logical_patch_ids": { "type": "array", "items": { "type": "string" } },
+    "command": { "type": "string" },
+    "patch_policy": { "type": "string" },
+    "files": {
+      "type": "array",
+      "description": "Every artifact written under the retrospective case directory, sorted by path.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    }
+  }
+}

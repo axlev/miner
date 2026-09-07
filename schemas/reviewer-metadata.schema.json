@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miner.local/schemas/reviewer-metadata.schema.json",
+  "title": "Prospective reviewer metadata (metadata.json)",
+  "description": "Closed, intentionally small reviewer-facing schema written by `miner prospective-export` as prospective/metadata.json. Matches internal/prospectiveexport.Metadata and the allowlist in internal/prospectiveexport.ValidateNormalized exactly: no field beyond this list may ever appear, and every included field must have passed cutoff-provenance validation before being written. See docs/export-contract.md §5.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repository", "cutoff_timestamp"],
+  "properties": {
+    "repository": {
+      "type": "string",
+      "minLength": 1,
+      "description": "owner/repo, copied from the selected correlated record's original.repository."
+    },
+    "cutoff_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339Nano UTC benchmark-view cutoff, copied verbatim from the --cutoff argument."
+    },
+    "title": {
+      "type": "string",
+      "description": "Present only when the PR title as of cutoff is positively provable (unchanged since, or reconstructed via a complete rename history)."
+    },
+    "description": {
+      "type": "string",
+      "description": "Present only when the PR body as of cutoff is positively provable (unchanged since cutoff); omitted otherwise because no complete body edit history is available."
+    },
+    "base_branch": {
+      "type": "string",
+      "description": "Present only when the base branch as of cutoff is positively provable (unchanged since cutoff)."
+    },
+    "commit_messages": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Present only when PR commit membership was frozen by a merge at or before cutoff, the cached commit list is complete, and every commit has an admissible (<= cutoff) timestamp."
+    }
+  }
+}

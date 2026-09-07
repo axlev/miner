@@ -52,9 +52,17 @@ func writeInput(t *testing.T, path, one, two string) []byte {
 	t.Helper()
 	missing := strings.Repeat("f", 40)
 	logical := strings.Repeat("1", 40)
-	record := `{"schema_version":"1.0.0","original":{"number":15624,"head_sha":"head","merge_commit_sha":"merge","repository":"FRRouting/frr"},"stateful":{},"retrospective":{"strong_signals":[{"signal_type":"FIXES_SHA","source_type":"COMMIT","source_ref":"` + one + `","timestamp":"2024-01-01T00:00:00Z","raw_snippet":"Fixes:","confidence":1,"logical_patch_id":"` + logical + `","strong_only_field":"kept"}],"medium_signals":[{"signal_type":"SAME_FUNCTION_FIX","source_type":"COMMIT","source_ref":"` + one + `","timestamp":"2024-01-02T00:00:00Z","function_or_path":"obviously_unrelated","context":"retain me"},{"signal_type":"LINKED_ISSUE_FIX","source_type":"COMMIT","source_ref":"` + two + `","timestamp":"2024-01-03T00:00:00Z","context":"also retain","logical_patch_id":"` + logical + `"}],"weak_signals":[{"signal_type":"SAME_FILE_MODIFICATION","source_ref":"` + missing + `","timestamp":"2024-01-04T00:00:00Z","file_path":"unrelated.md","context":"do not filter"}],"commit_relationships":[{"source_ref":"` + one + `","analysis_status":"complete","lineage":{"direct_lineage_fraction":0},"reversal":{"reversal_type":"none","nested_metric":{"future":"preserved"}}},{"source_ref":"` + missing + `","analysis_status":"unavailable","analysis_note":"missing"}]},"provenance":{"miner_version":"v1","config_hash":"cfg","harvested_at":"2024-01-01T00:00:00Z","observation_end":"2025-01-01T00:00:00Z"}}`
-	other := `{"original":{"number":1},"retrospective":{},"provenance":{}}`
-	content := []byte(other + "\n" + record + "\n")
+	tmpl, err := os.ReadFile(filepath.Join("..", "..", "testdata", "retrospectiveexport", "correlated_record.json.tmpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacer := strings.NewReplacer("{{ONE}}", one, "{{TWO}}", two, "{{MISSING}}", missing, "{{LOGICAL}}", logical)
+	record := strings.TrimRight(replacer.Replace(string(tmpl)), "\n")
+	other, err := os.ReadFile(filepath.Join("..", "..", "testdata", "retrospectiveexport", "other_record.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := append(append([]byte(nil), other...), []byte(record+"\n")...)
 	if err := os.WriteFile(path, content, 0644); err != nil {
 		t.Fatal(err)
 	}

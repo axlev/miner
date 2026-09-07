@@ -4,6 +4,7 @@ package prospectiveexport
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,9 +18,51 @@ import (
 
 	"github.com/google/go-github/v62/github"
 	"miner/internal/collector"
+	"miner/internal/gitx"
 )
 
 const SchemaVersion = "1.0.0"
+
+// ManifestSchemaVersion identifies the versioned public prospective-case manifest contract.
+const ManifestSchemaVersion = "miner/prospective-case/v1"
+
+// ManifestArtifact records the SHA-256 of one file published in a prospective case directory.
+type ManifestArtifact struct {
+	SHA256 string `json:"sha256"`
+}
+
+// Manifest is the versioned, engine-visible descriptor of a prospective case directory.
+// It intentionally carries repository/PR-comparison identity (head_sha, comparison_base_sha)
+// that metadata.json's six-field reviewer allowlist deliberately omits.
+type Manifest struct {
+	SchemaVersion     string                      `json:"schema_version"`
+	CaseID            string                      `json:"case_id"`
+	Repository        string                      `json:"repository"`
+	CutoffTimestamp   string                      `json:"cutoff_timestamp"`
+	ComparisonBaseSHA string                      `json:"comparison_base_sha"`
+	HeadSHA           string                      `json:"head_sha"`
+	Artifacts         map[string]ManifestArtifact `json:"artifacts"`
+}
+
+var fullSHAPattern = func(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// GenerateCaseID derives a deterministic, opaque case identifier from case-defining inputs.
+// It never embeds the PR number or repository as a literal, human-readable substring, closing
+// the "case ID discloses PR number" risk of caller-supplied identifiers like "case-15624".
+func GenerateCaseID(repository string, pr int, cutoff time.Time) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s#%d@%s", repository, pr, cutoff.UTC().Format(time.RFC3339Nano))))
+	return "case-" + hex.EncodeToString(h[:])[:16]
+}
 
 // Metadata is the complete and intentionally small reviewer-facing schema.
 type Metadata struct {
@@ -54,14 +97,27 @@ type Audit struct {
 type Options struct {
 	CorrelatedInput string
 	CacheFile       string
-	PR              int
-	Cutoff          time.Time
-	CaseID          string
-	Out             string
+	// Repo is the local Git repository used to resolve the canonical merge-base and
+	// produce the original-change patch. Required.
+	Repo   string
+	PR     int
+	Cutoff time.Time
+	// CaseID overrides the auto-generated opaque case identifier. Leave empty to have
+	// Export generate one via GenerateCaseID.
+	CaseID string
+	// ProspectiveOut and EvaluatorOut are separate, caller-supplied output roots. Keeping
+	// them separate (rather than subdirectories of one shared root) means a consumer that
+	// recursively ingests ProspectiveOut can never traverse into evaluator-only artifacts.
+	ProspectiveOut string
+	EvaluatorOut   string
 }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 
+// findRecord returns the single record matching pr. It fails closed on zero or more than
+// one match: a duplicate PR number anywhere in the input (whether same-repository duplicate
+// or a mixed-repository collision) is ambiguous, so it is rejected rather than resolved by
+// returning the first numeric match.
 func findRecord(path string, pr int) ([]byte, map[string]json.RawMessage, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -71,6 +127,13 @@ func findRecord(path string, pr int) ([]byte, map[string]json.RawMessage, error)
 	s := bufio.NewScanner(f)
 	s.Buffer(make([]byte, 1024*1024), 32*1024*1024)
 	line := 0
+	type match struct {
+		lineNo int
+		raw    []byte
+		root   map[string]json.RawMessage
+		repo   string
+	}
+	var matches []match
 	for s.Scan() {
 		line++
 		raw := append([]byte(nil), s.Bytes()...)
@@ -79,19 +142,30 @@ func findRecord(path string, pr int) ([]byte, map[string]json.RawMessage, error)
 			return nil, nil, fmt.Errorf("parse correlated line %d: %w", line, err)
 		}
 		var original struct {
-			Number int `json:"number"`
+			Number     int    `json:"number"`
+			Repository string `json:"repository"`
 		}
 		if err := json.Unmarshal(root["original"], &original); err != nil {
 			return nil, nil, fmt.Errorf("parse original line %d: %w", line, err)
 		}
 		if original.Number == pr {
-			return raw, root, nil
+			matches = append(matches, match{lineNo: line, raw: raw, root: root, repo: original.Repository})
 		}
 	}
 	if err := s.Err(); err != nil {
 		return nil, nil, err
 	}
-	return nil, nil, fmt.Errorf("PR #%d not found in %q", pr, path)
+	if len(matches) == 0 {
+		return nil, nil, fmt.Errorf("PR #%d not found in %q", pr, path)
+	}
+	if len(matches) > 1 {
+		lines := make([]string, len(matches))
+		for i, m := range matches {
+			lines[i] = fmt.Sprintf("line %d (%s)", m.lineNo, m.repo)
+		}
+		return nil, nil, fmt.Errorf("PR #%d is ambiguous in %q: %d matching records (%s)", pr, path, len(matches), strings.Join(lines, ", "))
+	}
+	return matches[0].raw, matches[0].root, nil
 }
 
 func decisionNo(reason string) FieldDecision { return FieldDecision{Included: false, Reason: reason} }
@@ -264,6 +338,83 @@ func ValidateNormalized(data []byte, cutoff time.Time, forbidden []string) error
 	return nil
 }
 
+var manifestAllowedKeys = map[string]bool{"schema_version": true, "case_id": true, "repository": true, "cutoff_timestamp": true, "comparison_base_sha": true, "head_sha": true, "artifacts": true}
+
+// ValidateManifest enforces the closed public manifest schema, including that every
+// declared artifact hash matches the corresponding file's actual bytes.
+func ValidateManifest(data []byte, cutoff time.Time, artifactBytes map[string][]byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var m Manifest
+	if err := dec.Decode(&m); err != nil {
+		return fmt.Errorf("strict manifest schema: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("multiple JSON values or trailing content")
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for k := range raw {
+		if !manifestAllowedKeys[k] {
+			return fmt.Errorf("unknown manifest field %q", k)
+		}
+	}
+	if m.SchemaVersion != ManifestSchemaVersion {
+		return fmt.Errorf("unsupported manifest schema_version %q", m.SchemaVersion)
+	}
+	if m.CaseID == "" || m.Repository == "" || m.CutoffTimestamp == "" {
+		return fmt.Errorf("case_id, repository, and cutoff_timestamp are required")
+	}
+	if !fullSHAPattern(m.ComparisonBaseSHA) || !fullSHAPattern(m.HeadSHA) {
+		return fmt.Errorf("comparison_base_sha and head_sha must be 40-character hex SHAs")
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, m.CutoffTimestamp)
+	if err != nil {
+		return fmt.Errorf("invalid cutoff_timestamp: %w", err)
+	}
+	if !parsed.Equal(cutoff.UTC()) {
+		return fmt.Errorf("manifest cutoff does not match requested cutoff")
+	}
+	for name, want := range artifactBytes {
+		a, ok := m.Artifacts[name]
+		if !ok {
+			return fmt.Errorf("manifest is missing artifact entry %q", name)
+		}
+		if got := digest(want); a.SHA256 != got {
+			return fmt.Errorf("manifest artifact hash mismatch for %q: manifest=%s actual=%s", name, a.SHA256, got)
+		}
+	}
+	for name := range m.Artifacts {
+		if _, ok := artifactBytes[name]; !ok {
+			return fmt.Errorf("manifest references unknown artifact %q", name)
+		}
+	}
+	return nil
+}
+
+var prospectiveAllowedFiles = map[string]bool{"manifest.json": true, "metadata.json": true, "change.patch": true}
+
+// validateProspectiveDirectory enforces an exact filename allowlist on a fully built
+// prospective directory so no unexpected file can be published into the engine-visible root.
+func validateProspectiveDirectory(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	if len(entries) != len(prospectiveAllowedFiles) {
+		return fmt.Errorf("prospective directory has %d entries, expected exactly %d", len(entries), len(prospectiveAllowedFiles))
+	}
+	for _, e := range entries {
+		if e.IsDir() || !prospectiveAllowedFiles[e.Name()] {
+			return fmt.Errorf("unexpected prospective artifact %q", e.Name())
+		}
+	}
+	return nil
+}
+
 func validateDecisions(decisions map[string]FieldDecision, cutoff time.Time) error {
 	for field, d := range decisions {
 		if !d.Included {
@@ -364,12 +515,39 @@ func forbiddenValues(root map[string]json.RawMessage) []string {
 	return out
 }
 
-// Export atomically creates separated prospective and evaluator-only artifacts.
-func Export(opt Options) error {
-	if opt.PR <= 0 || opt.CorrelatedInput == "" || opt.CacheFile == "" || opt.Out == "" || opt.CaseID == "" {
-		return fmt.Errorf("correlated input, cache file, pr, cutoff, case-id, and out are required")
+// crossCheckIdentity fails closed unless the cache bundle and the selected correlated
+// record agree on repository, PR number, and base/head commit identity. Without this,
+// a wrong cache file or a mixed-repository input could combine one repository's identity
+// with another PR's text (docs/export-contract.md §7 risk 5).
+func crossCheckIdentity(bundle collector.RawPRBundle, pr int, repository, baseSHA, headSHA string) error {
+	if bundle.PR == nil {
+		return fmt.Errorf("cached pull request is missing")
 	}
-	if strings.ContainsAny(opt.CaseID, "/\\") || opt.CaseID == "." || opt.CaseID == ".." {
+	if bundle.PR.GetNumber() != pr {
+		return fmt.Errorf("cache bundle PR number %d does not match selected record PR #%d", bundle.PR.GetNumber(), pr)
+	}
+	bundleRepo := bundle.PR.GetBase().GetRepo().GetFullName()
+	if bundleRepo == "" || bundleRepo != repository {
+		return fmt.Errorf("cache bundle repository identity %q does not match selected record repository %q", bundleRepo, repository)
+	}
+	bundleBase := bundle.PR.GetBase().GetSHA()
+	bundleHead := bundle.PR.GetHead().GetSHA()
+	if baseSHA == "" || bundleBase == "" || bundleBase != baseSHA {
+		return fmt.Errorf("cache bundle base_sha %q does not match selected record base_sha %q", bundleBase, baseSHA)
+	}
+	if headSHA == "" || bundleHead == "" || bundleHead != headSHA {
+		return fmt.Errorf("cache bundle head_sha %q does not match selected record head_sha %q", bundleHead, headSHA)
+	}
+	return nil
+}
+
+// Export builds a versioned, hash-verified prospective case directory and a separate
+// evaluator-only directory, each published atomically to its own caller-supplied root.
+func Export(ctx context.Context, opt Options) error {
+	if opt.PR <= 0 || opt.CorrelatedInput == "" || opt.CacheFile == "" || opt.Repo == "" || opt.ProspectiveOut == "" || opt.EvaluatorOut == "" {
+		return fmt.Errorf("correlated input, cache file, repo, pr, cutoff, prospective-out, and evaluator-out are required")
+	}
+	if opt.CaseID != "" && (strings.ContainsAny(opt.CaseID, "/\\") || opt.CaseID == "." || opt.CaseID == "..") {
 		return fmt.Errorf("case-id must be a neutral path component")
 	}
 	raw, root, err := findRecord(opt.CorrelatedInput, opt.PR)
@@ -386,10 +564,16 @@ func Export(opt Options) error {
 	}
 	var original struct {
 		Repository string `json:"repository"`
+		BaseSHA    string `json:"base_sha"`
+		HeadSHA    string `json:"head_sha"`
 	}
 	if err := json.Unmarshal(root["original"], &original); err != nil {
 		return err
 	}
+	if err := crossCheckIdentity(bundle, opt.PR, original.Repository, original.BaseSHA, original.HeadSHA); err != nil {
+		return fmt.Errorf("prospective identity validation failed: %w", err)
+	}
+
 	meta, decisions, err := Build(bundle, original.Repository, opt.Cutoff)
 	if err != nil {
 		return err
@@ -408,41 +592,100 @@ func Export(opt Options) error {
 	if err := ValidateNormalized(normalized, opt.Cutoff, forbiddenValues(root)); err != nil {
 		return fmt.Errorf("prospective validation failed: %w", err)
 	}
-	parent := filepath.Dir(opt.Out)
-	if err := os.MkdirAll(parent, 0755); err != nil {
-		return err
+
+	repo := gitx.OpenRepository(opt.Repo)
+	patch, mergeBase, err := repo.CanonicalChangePatch(ctx, original.BaseSHA, original.HeadSHA)
+	if err != nil {
+		return fmt.Errorf("resolve canonical change patch: %w", err)
 	}
-	tmp, err := os.MkdirTemp(parent, ".prospective-export-")
+
+	caseID := opt.CaseID
+	if caseID == "" {
+		caseID = GenerateCaseID(original.Repository, opt.PR, opt.Cutoff)
+	}
+	manifest := Manifest{
+		SchemaVersion:     ManifestSchemaVersion,
+		CaseID:            caseID,
+		Repository:        original.Repository,
+		CutoffTimestamp:   opt.Cutoff.UTC().Format(time.RFC3339Nano),
+		ComparisonBaseSHA: mergeBase,
+		HeadSHA:           original.HeadSHA,
+		Artifacts: map[string]ManifestArtifact{
+			"metadata.json": {SHA256: digest(normalized)},
+			"change.patch":  {SHA256: digest(patch)},
+		},
+	}
+	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmp)
-	if _, err := os.Stat(opt.Out); err == nil {
-		return fmt.Errorf("output %q already exists; refusing to mix or overwrite case artifacts", opt.Out)
+	manifestBytes = append(manifestBytes, '\n')
+	if err := ValidateManifest(manifestBytes, opt.Cutoff, map[string][]byte{"metadata.json": normalized, "change.patch": patch}); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+
+	if _, err := os.Stat(opt.ProspectiveOut); err == nil {
+		return fmt.Errorf("prospective output %q already exists; refusing to mix or overwrite case artifacts", opt.ProspectiveOut)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	prospectiveDir := filepath.Join(tmp, "prospective")
-	evaluatorDir := filepath.Join(tmp, "evaluator-only")
-	if err := os.MkdirAll(prospectiveDir, 0755); err != nil {
+	if _, err := os.Stat(opt.EvaluatorOut); err == nil {
+		return fmt.Errorf("evaluator output %q already exists; refusing to mix or overwrite case artifacts", opt.EvaluatorOut)
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.MkdirAll(evaluatorDir, 0755); err != nil {
+
+	prospectiveParent := filepath.Dir(opt.ProspectiveOut)
+	if err := os.MkdirAll(prospectiveParent, 0755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(prospectiveDir, "metadata.json"), normalized, 0644); err != nil {
+	prospectiveTmp, err := os.MkdirTemp(prospectiveParent, ".prospective-export-")
+	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(evaluatorDir, "correlated-report.json"), append(append([]byte(nil), raw...), '\n'), 0644); err != nil {
+	defer os.RemoveAll(prospectiveTmp)
+	if err := os.WriteFile(filepath.Join(prospectiveTmp, "metadata.json"), normalized, 0644); err != nil {
 		return err
 	}
-	audit := Audit{SchemaVersion: SchemaVersion, CaseID: opt.CaseID, PRNumber: opt.PR, Cutoff: opt.Cutoff.UTC().Format(time.RFC3339Nano), InputRecordSHA256: digest(raw), CacheBundleSHA256: digest(cacheRaw), Fields: decisions, Validation: "passed"}
+	if err := os.WriteFile(filepath.Join(prospectiveTmp, "change.patch"), patch, 0644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(prospectiveTmp, "manifest.json"), manifestBytes, 0644); err != nil {
+		return err
+	}
+	if err := validateProspectiveDirectory(prospectiveTmp); err != nil {
+		return fmt.Errorf("prospective directory validation failed: %w", err)
+	}
+
+	evaluatorParent := filepath.Dir(opt.EvaluatorOut)
+	if err := os.MkdirAll(evaluatorParent, 0755); err != nil {
+		return err
+	}
+	evaluatorTmp, err := os.MkdirTemp(evaluatorParent, ".evaluator-export-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(evaluatorTmp)
+	if err := os.WriteFile(filepath.Join(evaluatorTmp, "correlated-report.json"), append(append([]byte(nil), raw...), '\n'), 0644); err != nil {
+		return err
+	}
+	audit := Audit{SchemaVersion: SchemaVersion, CaseID: caseID, PRNumber: opt.PR, Cutoff: opt.Cutoff.UTC().Format(time.RFC3339Nano), InputRecordSHA256: digest(raw), CacheBundleSHA256: digest(cacheRaw), Fields: decisions, Validation: "passed"}
 	ab, err := json.MarshalIndent(audit, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(evaluatorDir, "metadata-export-audit.json"), append(ab, '\n'), 0644); err != nil {
+	ab = append(ab, '\n')
+	if err := os.WriteFile(filepath.Join(evaluatorTmp, "metadata-export-audit.json"), ab, 0644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, opt.Out)
+
+	// Both roots are fully built and validated before either rename, bounding the
+	// partial-publication window to the two filesystem rename calls themselves.
+	if err := os.Rename(prospectiveTmp, opt.ProspectiveOut); err != nil {
+		return err
+	}
+	if err := os.Rename(evaluatorTmp, opt.EvaluatorOut); err != nil {
+		return err
+	}
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"miner/internal/buildinfo"
 	"miner/internal/config"
 	"miner/internal/gitx"
 	"miner/internal/model"
@@ -166,7 +167,7 @@ func RebuildRawOffline(ctx context.Context, opts RebuildRawOptions, cfg *config.
 		}
 
 		provenance := model.Provenance{
-			MinerVersion:      "v1.0.0",
+			MinerVersion:      buildinfo.MinerVersion(),
 			ConfigHash:        configHash,
 			HarvestedAt:       time.Now().UTC(),
 			ObservationEnd:    obsEnd,
