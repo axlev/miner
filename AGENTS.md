@@ -54,6 +54,20 @@ notes as a substitute for reading the docs — they drift. Update `docs/export-c
   actually safe against `docs/export-contract.md` §7.
 - Prefer closed schemas, deterministic ordering, immutable outputs, explicit schema versions,
   canonical patches, and SHA-256 artifact hashes for anything new you add to an export path.
+- **The boundary rules are mirrored across two repos, and nothing detects drift.**
+  `engine-runner/internal/boundaryvalidator` is authoritative for what the engine accepts.
+  `validateBundle` and its constants in `internal/prospectiveexport/bundle.go`
+  (`reviewerAllowedEntries`, `gitMetadataNames`, `oracleShapedSubstrings`,
+  `snapshotOracleBasenames`, `snapshotOracleSubstrings`) plus the pinned schema-version
+  constants in `export.go` are a hand-maintained copy of those rules, kept so a bad bundle
+  fails at export time rather than downstream. Go forbids importing another module's
+  `internal/` packages, so the copy cannot be replaced by an import and no test can compare
+  the two — verification must shell out to `engine-runner`'s `cmd/bench`. If the engine
+  tightens, adds, or renames a rule and this copy is not updated in the same change, the
+  miner keeps publishing bundles the engine will reject, silently. There is no shared memory
+  between `coder-miner` and `coder-engine-runner` (`system-design.md` §14), so no session
+  will be told: re-read `boundaryvalidator.go` whenever you touch this pairing, and re-verify
+  a real bundle against `cmd/bench` afterwards.
 - Per the system design's access matrix (§13), you have no production access to raw mined data,
   prospective bundles, oracle bundles, or run results outside this repo — only synthetic
   fixtures and this repo's own source.
