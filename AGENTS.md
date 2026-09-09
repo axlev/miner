@@ -152,6 +152,11 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-09: GitHub repo renamed `benchmark-miner` -> `miner` (by the user, via the GitHub
+  UI; `gh` is not authenticated on this machine, so it could not be done from a session) and
+  `origin` re-pointed to `git@github.com:axlev/miner.git`. This closes the last straggler from
+  the 2026-09-06 rename, which had covered the directory, module, and binary but not the
+  remote. GitHub redirects the old name indefinitely, so any older clone still works.
 - 2026-09-09: `prospective-export` migrated from the flat `miner/prospective-case/v1` layout to
   the `reviewer/` + `control/` bundle defined by `repos/engine-runner/docs/prospective-bundle-contract.md`,
   which the engine can actually ingest. The substantial part is `reviewer/repository/`: a
