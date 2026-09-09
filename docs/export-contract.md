@@ -49,7 +49,12 @@ The implemented workflow is:
      canonical diff taken over the same two commit objects.
    - Publishes an engine-ingestible `reviewer/` + `control/` bundle, separately from the
      selected correlated record and audit data.
-9. `inspect` and `stats`
+9. `cohort-report` and `cohort-verify`
+   - `cohort-report` summarizes scored candidates for case selection, grouped by
+     subsystem, with a read-only export precheck. Evaluator-facing.
+   - `cohort-verify` exports a shortlist for real and submits each bundle to
+     `engine-runner`'s own boundary validator, so no case enters a cohort on a prediction.
+10. `inspect` and `stats`
    - Produce console reports and do not write files themselves.
 
 The maintained run script executes `collect -> correlate -> finalize-batches -> score -> export`.
@@ -70,6 +75,8 @@ Registered commands:
 - `stats`
 - `retrospective-export`
 - `prospective-export`
+- `cohort-report`
+- `cohort-verify`
 
 Important internal packages:
 
@@ -85,6 +92,7 @@ Important internal packages:
 | `internal/batchstore` | Immutable correlation checkpoint files and manifests |
 | `internal/prospectiveexport` | Reviewer-facing metadata allowlist, temporal validation, and engine-ingestible bundle assembly |
 | `internal/retrospectiveexport` | Evaluator/adjudication evidence materialization |
+| `internal/cohort` | Evaluator-facing cohort selection reports and shortlist verification |
 
 All Go packages are under `internal`, so the supported cross-repository boundary is currently files/JSON rather than a Go import API.
 
@@ -226,6 +234,36 @@ is published; each root refuses to overwrite an existing destination, and a vali
 failure (including cross-identity validation between the cache bundle, the selected
 correlated record, and the local Git repository — see §7 risk 5) leaves neither root
 written.
+
+### Cohort selection and verification
+
+**Added 2026-09-09.** Two evaluator-facing commands support choosing benchmark cases.
+
+`cohort-report` writes a single Markdown or CSV report and nothing else. Its export
+precheck resolves the merge-base and walks the head tree; both are read-only, and a test
+asserts the working tree is unchanged by a run. Rows are grouped by subsystem rather than
+globally ranked, because a cohort drawn from the top of a ranking tends to be one bug
+class in one subsystem and cannot discriminate across the axes `system-design.md` §15
+Milestone 4 requires. A generic container directory (`internal/`, `src/`, `pkg/`,
+`cmd/`) is stepped through when grouping so a Go repository does not collapse into one
+heading.
+
+`cohort-verify` writes one real prospective bundle per shortlisted PR under its output
+directory, plus the matching evaluator-only roots, then optionally runs `engine-runner`'s
+validator against each. It exists because the precheck is a prediction: a case that looks
+exportable can still fail on something the prediction cannot see, and discovering that
+after a cohort is frozen — or after a paid run has started — is the failure it prevents.
+A case whose validation was not run is reported as `not run`, never as passing, so
+unchecked and checked-and-clean cannot be confused.
+
+Validation shells out to `go run ./cmd/bench` in a caller-supplied `--bench-repo`. That
+is not a shortcut: `engine-runner` is a separate Go module and its validator lives under
+`internal/`, which Go forbids importing across module boundaries. Without `--bench-repo`
+nothing is validated and the exact command per bundle is printed instead, so this repo
+never assumes a sibling checkout exists.
+
+Both outputs are evaluator-facing and legitimately carry retrospective signal counts and
+ranking (§7 risk 2). Neither is ever written into a prospective bundle.
 
 ### Full repository run script
 
@@ -570,6 +608,7 @@ Added 2026-09-09, for engine ingestibility:
 - Models: `internal/model/*.go`
 - Legacy formats: `internal/cli/export.go`, `internal/storage/jsonl.go`, `internal/storage/export_format.go`
 - Prospective export: `internal/cli/prospective_export.go`, `internal/prospectiveexport/export.go`
+- Cohort selection and verification: `internal/cli/cohort.go`, `internal/cohort/report.go`, `internal/cohort/verify.go` *(added 2026-09-09)*
 - Retrospective export: `internal/cli/retrospective_export.go`, `internal/retrospectiveexport/export.go`
 - Build identity: `internal/buildinfo/buildinfo.go` *(added 2026-09-06)*
 - Merge-base/canonical patch resolution: `internal/gitx/diff.go` (`MergeBase`, `CanonicalChangePatch`) *(added 2026-09-06)*

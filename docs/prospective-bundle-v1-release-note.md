@@ -51,28 +51,26 @@ directory name does not disclose the PR number. `base_commit` is the locally res
 Git merge-base of the PR's base and head, not a value copied from a cached provider
 response.
 
-## The one semantic decision you should confirm
+## The snapshot is the cutoff tree — resolved
 
 **`reviewer/repository/` is the tree of `cutoff_commit` (the PR head), not of
 `base_commit`.** The diff is `git diff base_commit cutoff_commit`, so the snapshot is
 the diff's *post-image*: a reviewer sees the proposed code as it would land, and the
 diff tells them what changed to get there.
 
-I chose this over a base-tree snapshot on three pieces of evidence in your repo:
+This was originally an inference on the miner's side, from three pieces of evidence:
+`engine-runner`'s own fixtures hold post-change content (the `Decode` function and
+`HeaderSize` const that `diff.patch` adds are already present in
+`fixtures/cases/false-positive/.../frame/frame.go`);
+`internal/orchestrator/evidence.go` fails any stage citing a line past the end of a
+snapshot file, so a base-tree snapshot would fail nearly every citation of an added
+line; and the contract carries `base_commit` and `cutoff_commit` as distinct fields.
 
-1. Your own fixtures hold post-change content. In
-   `fixtures/cases/false-positive/prospective/reviewer/repository/frame/frame.go`, the
-   `Decode` function and `HeaderSize` const that `diff.patch` *adds* are already present
-   in the snapshot.
-2. `internal/orchestrator/evidence.go` fails a stage when a citation names a line outside
-   the snapshot file. A base-tree snapshot would fail every citation of an added line —
-   which is most of what reviewer-2 cites.
-3. Your contract's prose says "source as of the cutoff", and its manifest carries
-   `base_commit` and `cutoff_commit` as distinct fields, which only makes sense if the
-   snapshot is one of them and the diff spans both.
-
-If your intent was the base tree, this is a small change on my side, but it would
-contradict (1) and (2) above, so please push back explicitly rather than assuming.
+`docs/prospective-bundle-contract.md` has since made this explicit and normative —
+"The cutoff tree, not the base tree" — so the two sides agree and no confirmation is
+outstanding. It is recorded here because the choice looks like a bug to anyone arriving
+without context ("the snapshot already contains the change"), and reverting it would
+invalidate every bundle the miner produces.
 
 ## Guarantees the exporter now makes
 
@@ -241,12 +239,13 @@ ready to paste; the paths are local to that repo.
   false-positive on legitimate third-party source; prefer `WaivedOracleShapedPaths` over
   narrowing a rule, and expect the miner to report such paths rather than renaming them.
 
-- **`reviewer/repository/` is the tree of `cutoff_commit`, not `base_commit`.** This is
-  deliberate: your own fixtures hold post-change content, and
-  `internal/orchestrator/evidence.go` fails any citation naming a line outside the snapshot
-  file, so a base-tree snapshot would fail every citation of an added line. Do not "correct"
-  this to the base tree without raising it explicitly — it would invalidate every bundle the
-  miner has produced.
+- **`reviewer/repository/` is the tree of `cutoff_commit`, not `base_commit`**, as
+  `docs/prospective-bundle-contract.md` now states normatively. It looks wrong at first
+  glance — the snapshot already contains the change under review — so it is worth knowing
+  why before touching it: `internal/orchestrator/evidence.go` fails any citation naming a
+  line past the end of a snapshot file, so a base-tree snapshot would fail nearly every
+  citation of an added line. Do not "correct" it without raising it explicitly; it would
+  invalidate every bundle the miner has produced.
 ```
 
 ## Reference

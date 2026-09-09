@@ -271,6 +271,66 @@ Boundary validation is deterministic, offline, and needs no credentials; a rejec
 bundle runs no stages and writes `boundary-validation.json` naming every rule that
 tripped and the path that tripped it.
 
+#### Choose and Verify a Benchmark Cohort
+
+Two commands support picking the cases a benchmark run will use. Both are
+**evaluator-facing**: they show retrospective signal strength and ranking, which is
+legitimate for choosing cases but must never be given to a reviewer or wired into an
+engine-visible path.
+
+**Stage 1 — pick.** Summarize every scored candidate:
+
+```bash
+go run ./cmd/miner cohort-report \
+  --input ./output/frr_2024_benchmark_candidates.jsonl \
+  --repo ~/frr \
+  --out ./output/cohort-report.md
+```
+
+Rows carry heuristic score, retrospective signal tier, change size, subsystem, snapshot
+size, and — with `--repo` — whether the case looks exportable. `--format csv` writes the
+same rows for a spreadsheet.
+
+Output is grouped by subsystem rather than globally ranked, and that is deliberate: a
+cohort taken from the top of a ranking tends to be one bug class in one subsystem, which
+cannot distinguish review discovery from substantiation from false-positive suppression.
+Pick *across* groups. A generic container directory (`internal/`, `src/`, `pkg/`,
+`cmd/`) is stepped through when grouping, so a Go repository does not collapse into one
+heading.
+
+The exportability column is read-only and writes nothing — it resolves the merge-base and
+walks the head tree. It is a **prediction, not a proof**.
+
+**Stage 2 — prove.** Nothing should enter a cohort on a prediction:
+
+```bash
+go run ./cmd/miner cohort-verify \
+  --input ./output/frr_2024_benchmark_candidates.jsonl \
+  --repo ~/frr \
+  --cache-dir ./rebuilt_20260821/cache \
+  --prs 15624,15701,15733 \
+  --out ./output/cohort-bundles \
+  --bench-repo ~/repos/engine-runner
+```
+
+This runs the real prospective export for each shortlisted PR and then submits each
+resulting bundle to `engine-runner`'s own boundary validator, reporting a per-case
+pass/fail table. Each case is pinned to its own `merged_at` unless `--cutoff` overrides
+every case at once; per-PR provider bundles are resolved beneath `--cache-dir` using the
+`collect` layout.
+
+`--bench-repo` is optional. Without it no validation runs, every case is reported as
+`not run` rather than as passing, and the exact `bench` command for each bundle is
+printed for you to run by hand. The engine is a separate Go module whose validator lives
+under `internal/`, which Go forbids importing across module boundaries — so validation
+must shell out, and this repo does not assume a sibling checkout exists.
+
+A case that exports cleanly but fails boundary validation is reported as **FAIL**, and
+the command exits non-zero if any case is not cohort-ready. Snapshot paths that merely
+trip the engine's oracle-name heuristic are reported as warnings, not failures: that
+vocabulary belongs to the upstream repository and needs a protocol waiver on the engine
+side, not a rename here.
+
 ---
 
 ## Data Schema Reference

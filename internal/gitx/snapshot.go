@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -21,7 +22,7 @@ type SnapshotEntry struct {
 	Mode string
 	// Blob is the SHA-1 of the file's content object.
 	Blob string
-	// Size is the number of bytes written.
+	// Size is the blob's size in bytes, as reported by the object database.
 	Size int64
 }
 
@@ -60,7 +61,8 @@ func safeSnapshotPath(p string) error {
 // because a skipped entry would leave the snapshot inconsistent with a patch
 // generated from the same tree.
 func (r *Repository) ListTree(ctx context.Context, commitish string) ([]SnapshotEntry, error) {
-	out, err := r.gitOutput(ctx, "ls-tree", "-r", "-z", "--full-tree", commitish+"^{tree}")
+	// -l adds the blob size, so a caller can size a snapshot without materializing it.
+	out, err := r.gitOutput(ctx, "ls-tree", "-r", "-l", "-z", "--full-tree", commitish+"^{tree}")
 	if err != nil {
 		return nil, err
 	}
@@ -75,10 +77,19 @@ func (r *Repository) ListTree(ctx context.Context, commitish string) ([]Snapshot
 			return nil, fmt.Errorf("unparsable ls-tree record %q", rec)
 		}
 		fields := strings.Fields(rec[:tab])
-		if len(fields) != 3 {
+		if len(fields) != 4 {
 			return nil, fmt.Errorf("unparsable ls-tree header %q", rec[:tab])
 		}
-		mode, objType, blob, path := fields[0], fields[1], fields[2], rec[tab+1:]
+		mode, objType, blob, sizeField, path := fields[0], fields[1], fields[2], fields[3], rec[tab+1:]
+		// Non-blob entries report "-" for size; they are rejected below regardless.
+		var size int64
+		if sizeField != "-" {
+			n, err := strconv.ParseInt(sizeField, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("unparsable ls-tree size %q for %q", sizeField, path)
+			}
+			size = n
+		}
 		switch {
 		case mode == "120000":
 			rejected = append(rejected, path+" (symlink)")
@@ -96,7 +107,7 @@ func (r *Repository) ListTree(ctx context.Context, commitish string) ([]Snapshot
 					break
 				}
 			}
-			entries = append(entries, SnapshotEntry{Path: path, Mode: mode, Blob: blob})
+			entries = append(entries, SnapshotEntry{Path: path, Mode: mode, Blob: blob, Size: size})
 		}
 	}
 	if len(rejected) > 0 {

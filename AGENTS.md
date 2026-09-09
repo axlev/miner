@@ -38,7 +38,8 @@ notes as a substitute for reading the docs — they drift. Update `docs/export-c
 ## Architecture boundaries (non-negotiable)
 
 - This repo owns discovery, collection, correlation, candidate scoring, human-facing selection
-  reports, and the prospective/retrospective exports. It does not own or emulate
+  reports (including `cohort-report`/`cohort-verify`, `internal/cohort`), and the
+  prospective/retrospective exports. It does not own or emulate
   `engine-runner` behavior, and you do not work in `repos/engine-runner`.
 - Markdown/CSV/legacy-JSONL candidate reports (`export`) are **evaluator-facing only** — they
   may legitimately contain retrospective evidence and rank-affecting signals. Never treat them
