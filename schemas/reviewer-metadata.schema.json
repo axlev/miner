@@ -1,12 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://miner.local/schemas/reviewer-metadata.schema.json",
-  "title": "Prospective reviewer metadata (metadata.json)",
-  "description": "Closed, intentionally small reviewer-facing schema written by `miner prospective-export` as prospective/metadata.json. Matches internal/prospectiveexport.Metadata and the allowlist in internal/prospectiveexport.ValidateNormalized exactly: no field beyond this list may ever appear, and every included field must have passed cutoff-provenance validation before being written. See docs/export-contract.md §5.",
+  "title": "Prospective reviewer metadata (reviewer/metadata.json)",
+  "description": "Closed, intentionally small reviewer-facing schema written by `miner prospective-export` as <bundle-root>/reviewer/metadata.json. Matches internal/prospectiveexport.Metadata and the allowlist in internal/prospectiveexport.ValidateNormalized exactly, and is a subset of the fields engine-runner's boundary validator permits: no field beyond this list may ever appear, and every included field must have passed cutoff-provenance validation before being written. Field values are additionally scanned engine-side for retrospective outcome language even inside an allowed field. See docs/export-contract.md \u00a75 and engine-runner's docs/prospective-bundle-contract.md.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["repository", "cutoff_timestamp"],
+  "required": [
+    "schema_version",
+    "repository",
+    "cutoff_timestamp"
+  ],
   "properties": {
+    "schema_version": {
+      "const": "reviewer-metadata/v1",
+      "description": "Fixed contract version identifier. It pins the metadata contract independently of control/manifest.json, so a metadata file separated from its bundle is still self-identifying; the engine's boundary validator rejects any other value."
+    },
     "repository": {
       "type": "string",
       "minLength": 1,
@@ -31,7 +39,9 @@
     },
     "commit_messages": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Present only when PR commit membership was frozen by a merge at or before cutoff, the cached commit list is complete, and every commit has an admissible (<= cutoff) timestamp."
     }
   }

@@ -8,7 +8,7 @@ This report records a read-only inspection of the `benchmark-miner` repository. 
 
 The miner is a Go CLI that discovers merged pull requests, caches GitHub metadata, enriches records from a local Git repository, correlates later corrective commits, scores candidates, and exports either retrospective evidence or restricted prospective metadata.
 
-The newer `prospective-export` command is the appropriate starting boundary for `benchmark-engine`. Its current reviewer-facing output is deliberately small and excludes known retrospective fields. **Updated 2026-09-06:** it now also supplies a versioned public manifest, the canonical original-change patch, resolved comparison/head SHAs, public artifact hashes, and cross-identity validation, and stores evaluator-only files under a separate caller-supplied root — see §9/§10 for the item-by-item status. It remains incomplete relative to the full target architecture in `repos/engine-runner/docs/system-design.md` (not re-consulted for this round of changes; see `schemas/oracle-manifest.schema.json` for a note on that scoping choice), and retrospective-export's own directory-level atomicity (§7 risk noted inline in §3) is unchanged.
+The newer `prospective-export` command is the boundary `engine-runner` consumes. Its current reviewer-facing output is deliberately small and excludes known retrospective fields. **Updated 2026-09-09:** it now publishes the `reviewer/` + `control/` bundle `engine-runner` ingests, with a materialized source snapshot of the cutoff commit, the canonical original-change diff over the same two objects, an exhaustive checksum manifest, pinned schema versions, cross-identity validation, and pre-publication boundary validation, and stores evaluator-only files under a separate caller-supplied root — see §3 and §9/§10 for the item-by-item status. A bundle it produced was verified against the engine's own boundary validator (§8). The engine-facing side of the boundary is now settled against `repos/engine-runner/docs/prospective-bundle-contract.md`, which is normative for what the engine accepts and supersedes `system-design.md` §7 where they differ. `retrospective-export`'s own directory-level atomicity (§7 risk noted inline in §3) is unchanged.
 
 The legacy `export` output is a research/candidate artifact, not a prospective benchmark input: it includes retrospective evidence and may use that evidence for filtering.
 
@@ -45,7 +45,10 @@ The implemented workflow is:
    - Materializes all selected retrospective signals, commit relationships, commit metadata, and available patches for one PR.
 8. `prospective-export`
    - Builds a closed reviewer metadata allowlist using cutoff-aware field decisions.
-   - Writes reviewer-facing metadata separately from the selected correlated record and audit data.
+   - Materializes the cutoff commit's tree as a plain source snapshot and pairs it with the
+     canonical diff taken over the same two commit objects.
+   - Publishes an engine-ingestible `reviewer/` + `control/` bundle, separately from the
+     selected correlated record and audit data.
 9. `inspect` and `stats`
    - Produce console reports and do not write files themselves.
 
@@ -74,13 +77,13 @@ Important internal packages:
 | --- | --- |
 | `internal/cli` | Command orchestration, flags, and console reporting |
 | `internal/collector` | GitHub acquisition and cached-bundle-to-model conversion |
-| `internal/gitx` | Git repository management, diffs, symbols, ancestry, blame, reversal, and patch export |
+| `internal/gitx` | Git repository management, diffs, symbols, ancestry, blame, reversal, patch export, and source-snapshot materialization |
 | `internal/correlator` | Retrospective evidence detection and relationship analysis |
 | `internal/heuristics` | Prospective/stateful candidate scoring |
 | `internal/model` | Shared JSONL record types |
 | `internal/storage` | GitHub bundle cache and legacy JSONL/CSV/Markdown writers |
 | `internal/batchstore` | Immutable correlation checkpoint files and manifests |
-| `internal/prospectiveexport` | Reviewer-facing metadata allowlist and temporal validation |
+| `internal/prospectiveexport` | Reviewer-facing metadata allowlist, temporal validation, and engine-ingestible bundle assembly |
 | `internal/retrospectiveexport` | Evaluator/adjudication evidence materialization |
 
 All Go packages are under `internal`, so the supported cross-repository boundary is currently files/JSON rather than a Go import API.
@@ -149,34 +152,80 @@ This exporter writes directly into its destination and is not atomic at the dire
 
 ### Prospective case export
 
-**Updated 2026-09-06:** the exporter now publishes two independently caller-supplied
-output roots instead of one shared root with two subdirectories, and the prospective
-root gained a versioned manifest and canonical patch:
+**Updated 2026-09-09:** the exporter now publishes a bundle in the layout
+`engine-runner` ingests (`docs/prospective-bundle-contract.md` in that repo, which is
+normative for the engine and takes precedence over `system-design.md` §7 where they
+differ). The decision recorded there is that the miner adapts to the engine.
 
 ```text
-<prospective-out>/     (engine-visible; safe to ingest recursively)
-  manifest.json
-  metadata.json
-  change.patch
+<prospective-out>/     (the directory passed to the engine's `bench -bundle`)
+  reviewer/            everything a reasoner may ever see
+    repository/        materialized source snapshot of cutoff_commit
+    diff.patch         the admissible diff
+    metadata.json      reviewer-visible metadata
+  control/             engine-only; never mounted to a reasoner
+    manifest.json      routing and identity
+    checksums.sha256   integrity over every reviewer/ file
 
 <evaluator-out>/       (evaluator-only; must never be exposed to an engine)
   correlated-report.json
   metadata-export-audit.json
 ```
 
-`manifest.json` conforms to `schemas/prospective-manifest.schema.json`: schema
-version, an opaque miner-generated `case_id`, `repository`, `cutoff_timestamp`, the
-locally resolved `comparison_base_sha` (Git merge-base of the PR's base and head,
-not merely the cached provider value), `head_sha`, and a SHA-256 for every other
-artifact. `metadata.json` is unchanged (`schemas/reviewer-metadata.schema.json`) and
-still never carries `head_sha`/`comparison_base_sha`. `change.patch` is the
-canonical `git diff` from `comparison_base_sha` to `head_sha`.
+`reviewer/` and `control/` are separate because the engine's context builder
+allow-list-copies only the three named entries under `reviewer/`; `control/` is not on
+that path at all, so there is no filter to bypass.
 
-Both output roots are fully built and validated in temporary directories before
-either is published; each root refuses to overwrite an existing destination, and a
-validation failure (including cross-identity validation between the cache bundle,
-the selected correlated record, and the local Git repository — see §7 risk 5) leaves
-neither root written.
+`reviewer/repository/` is a plain directory tree of regular files written straight from
+the Git object database (`Repository.MaterializeTree`, `internal/gitx/snapshot.go`) —
+no checkout, no working tree, no `.git`. It is the tree of `cutoff_commit`, and
+`reviewer/diff.patch` is the canonical `git diff` from `base_commit` to that same
+`cutoff_commit`, so the diff's post-image *is* the snapshot. That correspondence is a
+property of how the two are produced rather than a reconciliation step, which matters
+because nothing downstream re-checks it: the engine validates that every evidence
+citation names a file present in `reviewer/repository/` with an in-range line span, so
+a snapshot that did not correspond would send reviewers to locations that fail
+validation after a stage had already been paid for. A tree entry that cannot be
+published as a plain regular file — a symlink, a submodule gitlink, or a path segment a
+consumer reads as Git metadata — fails the export rather than being skipped, because
+skipping one would silently break exactly that correspondence.
+
+`control/manifest.json` conforms to `schemas/prospective-manifest.schema.json` and pins
+`engine-manifest/v1`: an opaque miner-generated `case_id`, `repository`,
+`cutoff_timestamp`, the locally resolved `base_commit` (Git merge-base of the PR's base
+and head, not merely the cached provider value), `cutoff_commit`, and
+`snapshot_format`. `control/checksums.sha256` is one `sha256sum`-format line per regular
+file under `reviewer/` — digest, two spaces, path relative to the bundle root — and must
+describe exactly that set of files. It replaces the previous
+`manifest.json.artifacts` hashes and is strictly stronger, because it is exhaustive in
+both directions: a file present but unlisted is as much a signal as a digest mismatch,
+which is how a stray evaluator-only file is caught even when its name looks innocent.
+
+`reviewer/metadata.json` conforms to `schemas/reviewer-metadata.schema.json`: the same
+closed reviewer allowlist as before, plus a pinned
+`"schema_version": "reviewer-metadata/v1"`. The miner's own instinct was that version
+information belongs in the manifest; the engine requires it in the metadata file anyway,
+so that a metadata file separated from its bundle is still self-identifying. It still
+never carries `base_commit`/`cutoff_commit`.
+
+Before publication the exporter re-derives the consumer's admissibility rules against
+the built bundle (`validateBundle`, `internal/prospectiveexport/bundle.go`) as a second
+pass over the bytes on disk, not an assertion about the values used to write them.
+Layout, irregular files, Git metadata, pinned schema versions, and checksum agreement
+are errors. The lexical oracle-name heuristic applied *inside* the source snapshot is a
+warning only: that vocabulary belongs to the upstream repository, and the engine's
+protocol carries a waiver for exactly those paths, so they are reported for a human to
+judge rather than renamed or dropped. Exact evaluator-artifact basenames
+(`oracle.json`, `ground_truth.json`, …) remain errors even inside the snapshot —
+`ground_truth` is deliberately excluded from the fragments the engine matches there,
+because ML repositories use the term legitimately, which leaves that exact-filename case
+to the miner.
+
+Both output roots are fully built and validated in temporary directories before either
+is published; each root refuses to overwrite an existing destination, and a validation
+failure (including cross-identity validation between the cache bundle, the selected
+correlated record, and the local Git repository — see §7 risk 5) leaves neither root
+written.
 
 ### Full repository run script
 
@@ -274,6 +323,7 @@ The complete public allowlist is:
 
 | Field | Inclusion rule |
 | --- | --- |
+| `schema_version` | Required; always the pinned literal `reviewer-metadata/v1`. Added 2026-09-09 at the engine's request: it pins the metadata contract independently of `control/manifest.json`, so a metadata file separated from its bundle is still self-identifying |
 | `repository` | Required; copied from the selected correlated record's `original.repository` |
 | `cutoff_timestamp` | Required; copied from the explicit `--cutoff` argument |
 | `title` | Current cached title when PR `updated_at <= cutoff`; otherwise reconstructed by reversing a complete post-cutoff rename chain; omitted if uncertain |
@@ -281,17 +331,16 @@ The complete public allowlist is:
 | `base_branch` | Current cached base ref only when PR `updated_at <= cutoff`; omitted otherwise |
 | `commit_messages` | Included only when merge occurred by cutoff, cached list length equals declared PR commit count, and every commit has a message and timestamp no later than cutoff |
 
-Reviewer metadata (`metadata.json`) still omits, by design, all of the following —
-they are now published, but in the separate `manifest.json` artifact described in
-§3, not in `metadata.json`:
+Reviewer metadata (`reviewer/metadata.json`) carries a pinned `schema_version` and
+otherwise still omits, by design, all of the following — they are published, but under
+`control/` or as a sibling reviewer artifact, as described in §3:
 
-- Schema version. *(now in `manifest.json`)*
-- Case ID. *(now in `manifest.json`, opaque and miner-generated — see §10 item 5)*
-- Resolved merge base and head SHA. *(now in `manifest.json` as `comparison_base_sha`/`head_sha`)*
-- Public artifact hashes. *(now in `manifest.json.artifacts`)*
-- Original patch/diff. *(now `change.patch`, a sibling artifact)*
+- Case ID. *(`control/manifest.json`, opaque and miner-generated — see §10 item 5)*
+- Resolved merge base and head SHA. *(`control/manifest.json` as `base_commit`/`cutoff_commit`)*
+- Artifact hashes. *(`control/checksums.sha256`, covering every file under `reviewer/`)*
+- Original patch/diff. *(`reviewer/diff.patch`, a sibling reviewer artifact)*
 
-Still omitted everywhere in the prospective directory (unchanged):
+Still omitted everywhere in the prospective bundle (unchanged):
 
 - PR number.
 - Merge commit identity.
@@ -318,8 +367,8 @@ Per-field source, timestamps, validity, reconstruction method, and omission reas
 
 - `base_sha`, `head_sha`, and `merge_commit_sha` come from the cached current GitHub PR response.
 - Original change analysis uses `git diff -p -M base...head`, which resolves the comparison via Git merge-base semantics.
-- The resolved merge-base SHA is not stored.
-- The raw original diff is not included in the pipeline record or prospective export.
+- The resolved merge-base SHA is not stored in the pipeline record; `prospective-export` resolves it independently and records it as `control/manifest.json`'s `base_commit` (§3).
+- The raw original diff is not included in the pipeline record. `prospective-export` publishes it as `reviewer/diff.patch`, regenerated from the two commit objects rather than carried through the record.
 
 ### Cutoffs
 
@@ -350,16 +399,15 @@ The following are verified risks or contract weaknesses:
 5. **~~Record/cache identity is not cross-checked.~~** **Fixed 2026-09-06:** `crossCheckIdentity` rejects a mismatch between the cache bundle's PR number, repository, and base/head SHA and the selected correlated record's, before any output is written.
 6. **Collection treats current cached PR fields as `OriginalPR`.** Title, body, labels, and base ref may have changed after merge. The specialized prospective exporter screens only title/body/base branch. *(unchanged)*
 7. **Forbidden-value validation is exact-string based.** It checks selected full SHAs, snippets, contexts, and notes, but not short SHAs, PR references, paraphrases, or future values absent from those fields. *(unchanged; see §10 item 9 — this remains intentional defense-in-depth behind positive cutoff-provenance validation, not the primary gate)*
-8. **No prospective code snapshot is supplied.** If the engine independently uses a current checkout, it may observe post-cutoff code. **Partially addressed 2026-09-06:** `change.patch` now gives the engine the exact original-change diff so it need not rely on an independently checked-out working tree for the change itself, but applying that patch still requires the engine to check out `comparison_base_sha` from its own clone — the miner does not supply a full source snapshot.
+8. **~~No prospective code snapshot is supplied.~~** **Fixed 2026-09-09:** `reviewer/repository/` is a materialized directory tree of `cutoff_commit`, written from the object database. The engine no longer needs a clone, a checkout, or a patch-application step, so there is no path by which it could observe post-cutoff code from its own working tree.
 9. **Repository HEAD is recorded but does not constrain retrospective traversal.** `git log --all` can inspect commits on any local ref. *(unchanged; retrospective-export concern, not prospective-export)*
 10. **The cache is not literally verbatim HTTP responses.** It is a newly marshalled composite `RawPRBundle` assembled from several API calls. *(unchanged)*
 11. **~~Hard-coded miner version weakens provenance.~~** **Fixed 2026-09-06:** `provenance.miner_version` now resolves the actual build's Git revision via `internal/buildinfo.MinerVersion` (Go's embedded VCS metadata) instead of a fixed `v1.0.0` string.
 
-The prospective allowlist, cross-identity validation, opaque case IDs, separated
-output roots, and manifest artifact hashing together close risks 3, 4, 5, and 11
-for `prospective-export`. Risks 1, 2, 6, 7, 8, 9, and 10 remain and are out of scope
-for this round of changes; see `docs/export-contract.md` §10 for the item-by-item
-mapping to `AGENTS.md`'s backlog.
+The prospective allowlist, cross-identity validation, opaque case IDs, and separated
+output roots close risks 3, 4, 5, and 11 for `prospective-export`; the materialized
+snapshot closes risk 8. Risks 1, 2, 6, 7, 9, and 10 remain and are out of scope for
+this round of changes; see §10 for the item-by-item mapping to `AGENTS.md`'s backlog.
 
 ## 8. Existing tests and fixtures
 
@@ -387,6 +435,24 @@ since a checked-in `.git` fixture would be an opaque binary blob rather than a r
 fixture. This covers the two case-exporter test areas; other packages still synthesize
 data inline and were not migrated in this round.
 
+Added 2026-09-09 for the engine-ingestible bundle layout:
+
+- Bundle layout, naming, and pinned schema versions (`TestExportProducesEngineIngestibleLayout`).
+- Checksum-manifest exactness in both directions, sha256sum format, and bundle-root-relative paths (`TestChecksumsDescribeExactlyTheReviewerTree`, `TestValidateBundleRejectsBoundaryViolations`).
+- Diff/snapshot correspondence, by applying the published `reviewer/diff.patch` to a materialized `base_commit` tree and comparing the result to `reviewer/repository/` (`TestSnapshotCorrespondsToDiff`).
+- Fail-closed rejection of symlinks and Git-metadata-named paths in the head tree (`TestExportRejectsUnmaterializableTreeEntries`).
+- Warn-not-fail behavior for the waivable lexical heuristic inside the snapshot (`TestValidateBundleWarnsOnHighSignalSnapshotNames`).
+- Absence of evaluator-only content anywhere under `reviewer/` (`TestReviewerTreeCarriesNoEvaluatorContent`).
+- Reviewer-metadata `schema_version` pinning, including a missing and a wrong version (`TestStrictValidationRejectsUnknownNestedAndForbidden`).
+
+A bundle produced by `prospective-export` was additionally run through the engine's own
+boundary validator (`go run ./cmd/bench -bundle … -case-id …` in `repos/engine-runner`,
+which is deterministic, offline, and spends nothing) and passed all seven rules:
+`allowed_paths`, `no_irregular_files`, `no_git_metadata`, `reviewer_metadata_fields`,
+`oracle_shaped_content`, `checksum_manifest`, `pinned_schema_versions`. A negative
+control — an evaluator-only file copied into `reviewer/repository/` — was rejected by
+that validator on both `oracle_shaped_content` and `checksum_manifest`.
+
 Previously-missing tests now covered (2026-09-06):
 
 - Wrong cache PR number, repository, base SHA, or head SHA (`TestExportRejectsMismatchedCacheIdentity`).
@@ -404,55 +470,94 @@ Still missing (not scheduled in this round):
 - Legacy JSONL/Markdown/CSV export contract tests.
 - Retrospective atomicity and overwrite behavior (`retrospective-export` still writes directly into its destination; see §3).
 
-## 9. Recommended stable contract for benchmark-engine — Implemented 2026-09-06
+## 9. Stable contract for `engine-runner` — Implemented 2026-09-09
 
-`benchmark-engine` should consume one versioned, immutable, self-contained prospective directory. It should never consume a `PRCandidateRecord`, candidate JSONL, retrospective directory, or parent directory containing evaluator-only files.
+`engine-runner` consumes one versioned, immutable, self-contained prospective bundle.
+It must never consume a `PRCandidateRecord`, candidate JSONL, retrospective directory,
+or parent directory containing evaluator-only files.
 
-Implemented minimum (matches the recommendation below, produced at `--prospective-out`):
+The normative definition lives in `repos/engine-runner/docs/prospective-bundle-contract.md`
+and is derived from what that repo's `internal/boundaryvalidator` and
+`internal/contextbuilder` actually enforce. Where `system-design.md` §7 differs, the
+bundle contract is the accurate one. The recommendation this section previously carried
+(`miner/prospective-case/v1`: a flat root with `manifest.json`, `metadata.json`, and
+`change.patch`) was superseded on 2026-09-09; the decision taken was that the miner
+adapts to the engine.
+
+Implemented, produced at `--prospective-out`:
 
 ```text
-prospective/
-  manifest.json
-  metadata.json
-  change.patch
+<bundle-root>/
+  reviewer/
+    repository/
+    diff.patch
+    metadata.json
+  control/
+    manifest.json
+    checksums.sha256
 ```
 
-Implemented `manifest.json` (see `schemas/prospective-manifest.schema.json`; schema
-version renamed from the original recommendation's `benchmark-miner/...` prefix to
-`miner/...` to match this repo's 2026-09-06 rename):
+Implemented `control/manifest.json` (see `schemas/prospective-manifest.schema.json`):
 
 ```json
 {
-  "schema_version": "miner/prospective-case/v1",
+  "schema_version": "engine-manifest/v1",
   "case_id": "opaque-generated-id",
   "repository": "owner/repo",
   "cutoff_timestamp": "2024-04-10T05:22:26Z",
-  "comparison_base_sha": "40-character merge-base SHA",
-  "head_sha": "40-character PR-head SHA",
-  "artifacts": {
-    "metadata.json": {"sha256": "..."},
-    "change.patch": {"sha256": "..."}
-  }
+  "base_commit": "40-character merge-base SHA",
+  "cutoff_commit": "40-character PR-head SHA",
+  "snapshot_format": "directory-snapshot/v1"
 }
 ```
 
-`metadata.json` retains the original six-field allowlist. `change.patch` is the canonical merge-base-to-head PR diff, produced by `Repository.CanonicalChangePatch` (`internal/gitx/diff.go`). The merge commit SHA, PR number, retrospective signals/rank, observation end, later repository HEAD, and mining heuristic details remain outside the engine-visible package.
+`reviewer/metadata.json` retains the reviewer allowlist and adds a pinned
+`schema_version`. The merge commit SHA, PR number, retrospective signals/rank,
+observation end, later repository HEAD, and mining heuristic details remain outside the
+bundle entirely; `base_commit`/`cutoff_commit` are inside it but under `control/`, which
+the engine never passes to a reasoner.
 
-## 10. Smallest likely miner changes — status as of 2026-09-06
+Migration delta applied on 2026-09-09:
 
-1. **Implemented.** Versioned public manifest and canonical original-change patch added to `prospective-export` (`internal/prospectiveexport.Manifest`, `Repository.CanonicalChangePatch`).
-2. **Implemented.** `Repository.MergeBase` resolves the actual comparison merge-base locally via `git merge-base`; both it and `head_sha` are recorded in `manifest.json` and cross-checked against the cache bundle.
+| Previous miner output | Now |
+| --- | --- |
+| flat root | `reviewer/` + `control/` split |
+| `change.patch` | `reviewer/diff.patch` |
+| `comparison_base_sha` + patch, no tree | `reviewer/repository/` materialized snapshot |
+| `manifest.json` at engine-visible root | `control/manifest.json`, engine-only |
+| `manifest.json.artifacts` hashes | `control/checksums.sha256` |
+| `metadata.json` with no `schema_version` | `schema_version: reviewer-metadata/v1` |
+| `metadata.json` at root | `reviewer/metadata.json` |
+
+The evaluator-only root is unchanged: separately supplied, never under the bundle root,
+never traversed by the engine.
+
+## 10. Smallest likely miner changes — status as of 2026-09-09
+
+Items 1-9 record the 2026-09-06 round; several describe artifacts the 2026-09-09 bundle
+migration then replaced, and are marked inline. Items 10-13 are that migration.
+
+1. **Implemented, then superseded 2026-09-09.** A versioned public manifest and the canonical original-change patch were added to `prospective-export`. The patch remains (`Repository.CanonicalChangePatch`), now published as `reviewer/diff.patch`; `internal/prospectiveexport.Manifest` was replaced by `ControlManifest` at `control/manifest.json` (item 12).
+2. **Implemented.** `Repository.MergeBase` resolves the actual comparison merge-base locally via `git merge-base`; both it and the head SHA are recorded in `control/manifest.json` (as `base_commit`/`cutoff_commit`) and cross-checked against the cache bundle.
 3. **Implemented.** `crossCheckIdentity` validates that the selected record, cache bundle, and (implicitly, via successful patch resolution) local Git repository identify the same repository, PR number, and base/head commits.
 4. **Implemented.** `findRecord` now collects every line matching the requested PR number and rejects the export if more than one match exists, instead of returning the first.
 5. **Implemented.** `GenerateCaseID` derives an opaque `case-<16 hex>` identifier from a SHA-256 of repository/PR/cutoff; `--case-id` is now optional and defaults to this.
 6. **Implemented.** `prospective-export` now takes `--prospective-out` and `--evaluator-out` as two independent, separately-atomic output roots instead of one shared root with two subdirectories.
-7. **Implemented.** `ValidateManifest` recomputes and checks every artifact's SHA-256, and `validateProspectiveDirectory` enforces an exact filename allowlist on the built prospective directory before publication. Note: this is native Go structural validation against the same shape documented in `schemas/*.json`, not a runtime JSON-Schema library evaluation — no new dependency was added for this.
+7. **Implemented, then superseded 2026-09-09.** `ValidateManifest` recomputed every artifact's SHA-256 and `validateProspectiveDirectory` enforced a filename allowlist on the flat directory. Both were replaced by `validateBundle` and `control/checksums.sha256` (items 11 and 13), which are exhaustive over the whole `reviewer/` tree rather than over a fixed list of three names. This remains native Go structural validation against the same shape documented in `schemas/*.json`, not a runtime JSON-Schema library evaluation — no new dependency was added.
 8. **Implemented.** `internal/buildinfo.MinerVersion` records the actual build's Git revision (via Go's embedded VCS metadata) in `provenance.miner_version`, replacing the hard-coded `v1.0.0`.
 9. **Already implemented by design; not a code change this round.** `Build` (`internal/prospectiveexport/export.go`) only ever sets a `Metadata` field when its `FieldDecision.Included` is positively proven from cutoff-admissible provenance — a field is never included and *then* screened out by forbidden-value scanning. `ValidateNormalized`'s forbidden-string check runs strictly after and in addition to this, as defense in depth. `TestBuildOmitsAmbiguousEditedText` demonstrates this directly by asserting omission at the `Build` level, without invoking forbidden-value scanning at all.
 
+
+Added 2026-09-09, for engine ingestibility:
+
+10. **Implemented.** `Repository.MaterializeTree`/`ListTree` (`internal/gitx/snapshot.go`) write the tree of `cutoff_commit` as a plain directory of regular files, reading blobs straight from the object database via a streamed `git cat-file --batch`. Symlinks, submodule gitlinks, and Git-metadata-named path segments fail the export rather than being skipped.
+11. **Implemented.** `control/checksums.sha256` replaces `manifest.json.artifacts`; `validateBundle` (`internal/prospectiveexport/bundle.go`) recomputes it from disk and requires exact agreement in both directions.
+12. **Implemented.** `Metadata.SchemaVersion` pins `reviewer-metadata/v1` and `ValidateNormalized` rejects any other value; `ControlManifest` pins `engine-manifest/v1` and `ValidateControlManifest` replaces `ValidateManifest`.
+13. **Implemented.** `validateBundle` re-derives the engine's admissibility rules against the built bundle before publication, erroring on the unwaivable rules and warning on the lexical oracle-name heuristic inside the snapshot, whose vocabulary is upstream's.
+
 ## Proposed miner-engine interface
 
-`benchmark-miner` produces an immutable directory conforming to `benchmark-miner/prospective-case/v1`. `benchmark-engine` accepts exactly that directory, verifies the manifest version and artifact SHA-256 hashes, checks out `comparison_base_sha`, applies `change.patch` or verifies `head_sha`, and uses only `metadata.json` as natural-language context. Retrospective/evaluator artifacts are generated into a separate location that the engine process cannot traverse.
+**Superseded 2026-09-09.** The original proposal — an immutable directory conforming to `benchmark-miner/prospective-case/v1`, from which the engine would check out `comparison_base_sha` and apply `change.patch` — was replaced by the bundle contract in §9. The engine no longer checks out or applies anything: it mounts `reviewer/repository/` read-only, so there is no post-mount step that could reintroduce contamination after validation ran. Retrospective/evaluator artifacts are still generated into a separate location the engine process cannot traverse.
 
 ## Source index
 
@@ -468,6 +573,9 @@ version renamed from the original recommendation's `benchmark-miner/...` prefix 
 - Retrospective export: `internal/cli/retrospective_export.go`, `internal/retrospectiveexport/export.go`
 - Build identity: `internal/buildinfo/buildinfo.go` *(added 2026-09-06)*
 - Merge-base/canonical patch resolution: `internal/gitx/diff.go` (`MergeBase`, `CanonicalChangePatch`) *(added 2026-09-06)*
+- Source snapshot materialization: `internal/gitx/snapshot.go` (`ListTree`, `MaterializeTree`) *(added 2026-09-09)*
+- Bundle layout, checksum manifest, and pre-publication boundary validation: `internal/prospectiveexport/bundle.go` *(added 2026-09-09)*
+- Normative engine ingest contract: `repos/engine-runner/docs/prospective-bundle-contract.md`
 - Public schemas: `schemas/prospective-manifest.schema.json`, `schemas/reviewer-metadata.schema.json`, `schemas/oracle-manifest.schema.json` *(added 2026-09-06)*
 - Checked-in test fixtures: `testdata/prospectiveexport/`, `testdata/retrospectiveexport/` *(added 2026-09-06)*
 - Tests: corresponding `*_test.go` files under `internal/`

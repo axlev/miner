@@ -17,13 +17,18 @@ This file is the single source of truth for your role, boundaries, and working c
    under `internal/prospectiveexport`, `internal/retrospectiveexport`, `internal/gitx`, or
    `internal/correlator`, and re-read the relevant section whenever a task touches identity,
    cutoffs, or exported fields.
-3. **`repos/engine-runner/docs/system-design.md`** — the cross-repo system design. §7
+3. **`repos/engine-runner/docs/prospective-bundle-contract.md`** — normative for what the
+   engine actually accepts as a prospective bundle, derived from that repo's
+   `internal/boundaryvalidator` and `internal/contextbuilder` rather than from an aspiration.
+   The miner adapts to the engine, not the reverse. Where `system-design.md` §7 disagrees with
+   it, this document wins. Read it before changing anything the engine ingests.
+4. **`repos/engine-runner/docs/system-design.md`** — the cross-repo system design. §7
    ("Prospective and oracle contracts") and §13 ("Access matrix") describe what this miner is
    ultimately expected to produce and what `coder-miner` may and may not access. Treat it as
    target architecture, not current implementation, until confirmed in this repo's code.
-4. **`README.md`** — user-facing command reference and JSONL schema example. Keep it in sync
+5. **`README.md`** — user-facing command reference and JSONL schema example. Keep it in sync
    with the code; it is documentation, not ground truth if it disagrees with the code.
-5. **`PLAN.md`** — original design rationale only. It is aspirational in places; never cite it
+6. **`PLAN.md`** — original design rationale only. It is aspirational in places; never cite it
    as evidence that something is implemented.
 
 Do not duplicate CLI flag tables, package tables, or the contamination-risk list into scratch
@@ -126,22 +131,51 @@ Use exactly these terms; do not substitute "done" or "exists":
 
 ## Backlog (target structure not yet built)
 
-`repos/engine-runner/docs/system-design.md` §4.1 specifies a target repo layout this repo does
-not yet fully have. Known gaps, not yet scheduled:
+`repos/engine-runner/docs/system-design.md` §4.1 specifies a target repo layout this repo now
+largely has. Remaining gaps, not yet scheduled:
 
-- `schemas/` — `prospective-manifest.schema.json`, `reviewer-metadata.schema.json`,
-  `oracle-manifest.schema.json` do not exist yet. Creating them is real schema-design work
-  (they must match `internal/model` and the export contract exactly); do not stub them with
-  placeholder content.
-- `testdata/` — no checked-in fixture directory exists; tests currently synthesize records and
-  Git repos inline. Populating this is a deliberate future task, not incidental cleanup.
-- The recommended stable engine contract (`docs/export-contract.md` §9–§10) — a versioned
-  public manifest, resolved comparison SHAs, cross-identity validation, opaque case IDs,
-  artifact hashing — is not implemented. Treat each item as its own scoped task, not one big
-  change.
+- `testdata/` — only `testdata/prospectiveexport/` and `testdata/retrospectiveexport/` hold
+  checked-in correlated-record templates. Every other package still synthesizes records and
+  Git repos inline, and Git repository synthesis stays in-test by choice (a checked-in `.git`
+  fixture would be an opaque binary blob, not a reviewable fixture). Extending this is a
+  deliberate future task, not incidental cleanup.
+- `retrospective-export` still writes directly into its destination and is not atomic at the
+  directory level, unlike `prospective-export` (`docs/export-contract.md` §3). It also lacks
+  `prospective-export`'s duplicate-PR-number handling.
+- Contamination risks 1, 2, 6, 7, 9, and 10 in `docs/export-contract.md` §7 remain open. Treat
+  each as its own scoped task.
+
+The engine-facing contract itself is implemented and verified: `schemas/` exists
+(`prospective-manifest.schema.json`, `reviewer-metadata.schema.json`,
+`oracle-manifest.schema.json`), and `prospective-export` produces the `reviewer/` + `control/`
+bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-09: `prospective-export` migrated from the flat `miner/prospective-case/v1` layout to
+  the `reviewer/` + `control/` bundle defined by `repos/engine-runner/docs/prospective-bundle-contract.md`,
+  which the engine can actually ingest. The substantial part is `reviewer/repository/`: a
+  materialized source snapshot written from the Git object database
+  (`internal/gitx/snapshot.go`), replacing "base SHA plus a patch, no tree". Chose the tree of
+  `cutoff_commit` (the PR head) rather than the merge-base tree, on the evidence of the engine's
+  own fixtures (`fixtures/cases/*/prospective/reviewer/repository/` hold post-change content)
+  and of `internal/orchestrator/evidence.go`, which validates every review citation against a
+  file in the snapshot with an in-range line span — a base-tree snapshot would fail every
+  citation of an added line. The bundle contract's prose ("source as of the cutoff") and its
+  distinct `base_commit`/`cutoff_commit` manifest fields agree; the summary phrase "checking out
+  the base commit" in the task prompt does not, and was not followed. Flagged to the user.
+- 2026-09-09: Made unmaterializable tree entries (symlinks, submodule gitlinks, Git-metadata
+  names) fail the export rather than be skipped. Skipping one would leave `reviewer/diff.patch`
+  describing files the snapshot does not have, and nothing downstream re-checks that
+  correspondence — the engine only discovers it when a reviewer cites a line that fails
+  validation, after that stage has been paid for.
+- 2026-09-09: Split pre-publication bundle validation by whether the engine can waive the rule.
+  Layout, irregular files, Git metadata, pinned schema versions, and checksum agreement are
+  errors. The lexical oracle-name heuristic inside `reviewer/repository/` is a warning, because
+  that vocabulary belongs to the upstream repository and the engine's protocol has a waiver for
+  exactly those paths; blocking there would be the miner overriding the engine's policy. Exact
+  evaluator-artifact basenames stay errors even inside the snapshot, including
+  `ground_truth.json`, which the engine deliberately excludes from its in-snapshot fragment list.
 - 2026-09-06: Repo renamed from `benchmark-miner` to `miner` and `ARCHITECTURE_EXPORT_CONTRACT.md`
   moved to `docs/export-contract.md`, to match the target layout in `system-design.md` §4.1.
 - 2026-09-06: Chose a single `AGENTS.md` (imported by a one-line `CLAUDE.md`) over a separate

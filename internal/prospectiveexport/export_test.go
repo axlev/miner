@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-github/v62/github"
 	"miner/internal/collector"
+	"miner/internal/gitx"
 )
 
 var cutoff = time.Date(2024, 4, 10, 5, 22, 26, 0, time.UTC)
@@ -39,6 +41,9 @@ func TestBuildNeverChangedExportsProvenFields(t *testing.T) {
 	m, d, err := Build(b, "owner/repo", cutoff)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if m.SchemaVersion != MetadataSchemaVersion {
+		t.Fatalf("reviewer metadata schema_version is %q, want %q", m.SchemaVersion, MetadataSchemaVersion)
 	}
 	if m.Title == nil || *m.Title != "cutoff title" || m.Description == nil || *m.Description != "cutoff description" || m.BaseBranch == nil || len(m.CommitMessages) != 1 {
 		t.Fatalf("missing admissible fields: %+v", m)
@@ -112,7 +117,13 @@ func TestPreMergeCutoffOmitsStateAndCommits(t *testing.T) {
 }
 
 func TestStrictValidationRejectsUnknownNestedAndForbidden(t *testing.T) {
-	cases := [][]byte{[]byte(`{"repository":"o/r","cutoff_timestamp":"2024-04-10T05:22:26Z","new_provider_field":"FUTURE_ONLY"}`), []byte(`{"repository":{"raw_provider_payload":true},"cutoff_timestamp":"2024-04-10T05:22:26Z"}`), []byte(`{"repository":"o/r","cutoff_timestamp":"2024-04-10T05:22:26Z","title":"future-sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)}
+	cases := [][]byte{
+		[]byte(`{"schema_version":"reviewer-metadata/v1","repository":"o/r","cutoff_timestamp":"2024-04-10T05:22:26Z","new_provider_field":"FUTURE_ONLY"}`),
+		[]byte(`{"schema_version":"reviewer-metadata/v1","repository":{"raw_provider_payload":true},"cutoff_timestamp":"2024-04-10T05:22:26Z"}`),
+		[]byte(`{"schema_version":"reviewer-metadata/v1","repository":"o/r","cutoff_timestamp":"2024-04-10T05:22:26Z","title":"future-sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+		[]byte(`{"repository":"o/r","cutoff_timestamp":"2024-04-10T05:22:26Z"}`),
+		[]byte(`{"schema_version":"reviewer-metadata/v2","repository":"o/r","cutoff_timestamp":"2024-04-10T05:22:26Z"}`),
+	}
 	for i, data := range cases {
 		forbidden := []string(nil)
 		if i == 2 {
@@ -153,7 +164,16 @@ func buildRepo(t *testing.T) (dir, baseSHA, headSHA string) {
 	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, dir, "add", "feature.txt")
+	if err := os.MkdirAll(filepath.Join(dir, "pkg"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pkg", "nested.txt"), []byte("nested\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base modified by the change\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "feature.txt", "pkg/nested.txt", "base.txt")
 	runGit(t, dir, "commit", "-q", "-m", "feature")
 	headSHA = runGit(t, dir, "rev-parse", "HEAD")
 	return dir, baseSHA, headSHA
@@ -192,6 +212,9 @@ func writeFixture(t *testing.T, dir string) fixtureSet {
 	return fixtureSet{repoDir: repoDir, input: input, cache: cache, baseSHA: baseSHA, headSHA: headSHA, record: record}
 }
 
+// bundlePath joins a bundle-root-relative slash path onto root.
+func bundlePath(root, rel string) string { return filepath.Join(root, filepath.FromSlash(rel)) }
+
 func TestExportSeparatesEvaluatorDataAndIsDeterministic(t *testing.T) {
 	dir := t.TempDir()
 	fx := writeFixture(t, dir)
@@ -199,53 +222,59 @@ func TestExportSeparatesEvaluatorDataAndIsDeterministic(t *testing.T) {
 	evalOuts := []string{filepath.Join(dir, "evaluator-1"), filepath.Join(dir, "evaluator-2")}
 	for i := range prospOuts {
 		opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: prospOuts[i], EvaluatorOut: evalOuts[i]}
-		if err := Export(context.Background(), opt); err != nil {
+		warnings, err := Export(context.Background(), opt)
+		if err != nil {
 			t.Fatal(err)
 		}
+		if len(warnings) != 0 {
+			t.Fatalf("clean fixture raised warnings: %v", warnings)
+		}
 	}
-	a, _ := os.ReadFile(filepath.Join(prospOuts[0], "metadata.json"))
-	b, _ := os.ReadFile(filepath.Join(prospOuts[1], "metadata.json"))
+	a, _ := os.ReadFile(bundlePath(prospOuts[0], "reviewer/metadata.json"))
+	b, _ := os.ReadFile(bundlePath(prospOuts[1], "reviewer/metadata.json"))
 	if string(a) != string(b) {
 		t.Fatal("normalized metadata differs")
 	}
-	manifestA, _ := os.ReadFile(filepath.Join(prospOuts[0], "manifest.json"))
-	manifestB, _ := os.ReadFile(filepath.Join(prospOuts[1], "manifest.json"))
+	manifestA, _ := os.ReadFile(bundlePath(prospOuts[0], "control/manifest.json"))
+	manifestB, _ := os.ReadFile(bundlePath(prospOuts[1], "control/manifest.json"))
 	if string(manifestA) != string(manifestB) {
 		t.Fatal("manifest differs across identical runs; auto-generated case ID should be deterministic")
+	}
+	sumsA, _ := os.ReadFile(bundlePath(prospOuts[0], "control/checksums.sha256"))
+	sumsB, _ := os.ReadFile(bundlePath(prospOuts[1], "control/checksums.sha256"))
+	if string(sumsA) != string(sumsB) {
+		t.Fatal("checksum manifest is not deterministic")
 	}
 	for _, future := range []string{"FUTURE_ONLY_FIX", strings.Repeat("a", 40), strings.Repeat("c", 40), strings.Repeat("d", 40)} {
 		if strings.Contains(string(a), future) {
 			t.Fatalf("future value leaked into metadata: %s", future)
 		}
 	}
-	patch, err := os.ReadFile(filepath.Join(prospOuts[0], "change.patch"))
+	patch, err := os.ReadFile(bundlePath(prospOuts[0], "reviewer/diff.patch"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(patch), "feature.txt") {
-		t.Fatalf("change.patch missing expected content: %s", patch)
+		t.Fatalf("diff.patch missing expected content: %s", patch)
 	}
 
-	var m Manifest
+	var m ControlManifest
 	if err := json.Unmarshal(manifestA, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.SchemaVersion != ManifestSchemaVersion {
+	if m.SchemaVersion != ControlManifestSchemaVersion {
 		t.Fatalf("unexpected schema_version: %s", m.SchemaVersion)
 	}
-	if m.ComparisonBaseSHA != fx.baseSHA {
-		t.Fatalf("expected comparison_base_sha %s, got %s", fx.baseSHA, m.ComparisonBaseSHA)
+	if m.SnapshotFormat != SnapshotFormat {
+		t.Fatalf("unexpected snapshot_format: %s", m.SnapshotFormat)
 	}
-	if m.HeadSHA != fx.headSHA {
-		t.Fatalf("expected head_sha %s, got %s", fx.headSHA, m.HeadSHA)
+	if m.BaseCommit != fx.baseSHA {
+		t.Fatalf("expected base_commit %s, got %s", fx.baseSHA, m.BaseCommit)
 	}
-	if m.Artifacts["metadata.json"].SHA256 != sha256Hex(a) {
-		t.Fatal("manifest metadata.json hash does not match on-disk bytes")
+	if m.CutoffCommit != fx.headSHA {
+		t.Fatalf("expected cutoff_commit %s, got %s", fx.headSHA, m.CutoffCommit)
 	}
-	if m.Artifacts["change.patch"].SHA256 != sha256Hex(patch) {
-		t.Fatal("manifest change.patch hash does not match on-disk bytes")
-	}
-	if !strings.Contains(m.CaseID, strings.TrimPrefix(m.CaseID, "case-")) || strings.Contains(m.CaseID, "42") {
+	if strings.Contains(m.CaseID, "42") {
 		t.Fatalf("auto-generated case ID appears to disclose PR number: %s", m.CaseID)
 	}
 
@@ -253,19 +282,275 @@ func TestExportSeparatesEvaluatorDataAndIsDeterministic(t *testing.T) {
 	if string(eval) != fx.record+"\n" || !strings.Contains(string(eval), "FUTURE_ONLY_FIX") {
 		t.Fatal("evaluator report was altered")
 	}
-	prospEntries, err := os.ReadDir(prospOuts[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(prospEntries) != 3 {
-		t.Fatalf("expected exactly manifest.json, metadata.json, change.patch; got %+v", prospEntries)
-	}
 	evalEntries, err := os.ReadDir(evalOuts[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(evalEntries) != 2 {
 		t.Fatalf("expected exactly correlated-report.json and metadata-export-audit.json; got %+v", evalEntries)
+	}
+}
+
+// TestExportProducesEngineIngestibleLayout pins the layout, naming, and pinned
+// schema versions the engine's ingest contract requires.
+func TestExportProducesEngineIngestibleLayout(t *testing.T) {
+	dir := t.TempDir()
+	fx := writeFixture(t, dir)
+	out := filepath.Join(dir, "bundle")
+	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: out, EvaluatorOut: filepath.Join(dir, "evaluator")}
+	if _, err := Export(context.Background(), opt); err != nil {
+		t.Fatal(err)
+	}
+
+	top, err := os.ReadDir(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range top {
+		if !e.IsDir() {
+			t.Fatalf("bundle root holds a non-directory entry %q", e.Name())
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "control,reviewer" {
+		t.Fatalf("bundle root is %v, want exactly control/ and reviewer/", names)
+	}
+
+	reviewer, err := os.ReadDir(filepath.Join(out, "reviewer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names = names[:0]
+	for _, e := range reviewer {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "diff.patch,metadata.json,repository" {
+		t.Fatalf("reviewer/ is %v, want exactly the three allow-listed entries", names)
+	}
+
+	// The snapshot is a plain tree of regular files, with no Git metadata anywhere.
+	if err := filepath.WalkDir(bundlePath(out, "reviewer/repository"), func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if gitMetadataNames[d.Name()] {
+			t.Fatalf("snapshot carries Git metadata at %s", path)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && !info.Mode().IsRegular() {
+			t.Fatalf("snapshot carries an irregular file at %s (%s)", path, info.Mode().Type())
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var meta map[string]any
+	raw, err := os.ReadFile(bundlePath(out, "reviewer/metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta["schema_version"] != MetadataSchemaVersion {
+		t.Fatalf("reviewer metadata schema_version is %v, want %q", meta["schema_version"], MetadataSchemaVersion)
+	}
+	for _, forbidden := range []string{"merged", "state", "merged_at", "closed_at", "fix_commit", "head_sha", "comparison_base_sha", "base_commit", "cutoff_commit"} {
+		if _, ok := meta[forbidden]; ok {
+			t.Fatalf("outcome-carrying field %q reached reviewer metadata", forbidden)
+		}
+	}
+}
+
+// TestChecksumsDescribeExactlyTheReviewerTree covers both directions the engine
+// checks: an unlisted file and a listed-but-absent one are equally violations, and
+// every digest must match the bytes on disk.
+func TestChecksumsDescribeExactlyTheReviewerTree(t *testing.T) {
+	dir := t.TempDir()
+	fx := writeFixture(t, dir)
+	out := filepath.Join(dir, "bundle")
+	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: out, EvaluatorOut: filepath.Join(dir, "evaluator")}
+	if _, err := Export(context.Background(), opt); err != nil {
+		t.Fatal(err)
+	}
+
+	sums, err := os.ReadFile(bundlePath(out, "control/checksums.sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]string{}
+	for _, line := range strings.Split(strings.TrimRight(string(sums), "\n"), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) != 2 {
+			t.Fatalf("malformed checksum line %q", line)
+		}
+		if !strings.HasPrefix(parts[1], "reviewer/") {
+			t.Fatalf("checksum path %q is not relative to the bundle root", parts[1])
+		}
+		// sha256sum format is digest, two spaces, path.
+		if !strings.Contains(line, parts[0]+"  "+parts[1]) {
+			t.Fatalf("checksum line %q is not in sha256sum format", line)
+		}
+		listed[parts[1]] = parts[0]
+	}
+	for _, required := range []string{"reviewer/diff.patch", "reviewer/metadata.json", "reviewer/repository/base.txt", "reviewer/repository/feature.txt", "reviewer/repository/pkg/nested.txt"} {
+		if _, ok := listed[required]; !ok {
+			t.Fatalf("checksum manifest omits %s", required)
+		}
+	}
+
+	present := map[string]bool{}
+	if err := filepath.WalkDir(filepath.Join(out, "reviewer"), func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(out, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		present[rel] = true
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if listed[rel] != sha256Hex(body) {
+			t.Fatalf("%s: digest %s does not match the manifest's %s", rel, sha256Hex(body), listed[rel])
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(present) != len(listed) {
+		t.Fatalf("checksum manifest lists %d files but the reviewer tree holds %d", len(listed), len(present))
+	}
+}
+
+// TestSnapshotCorrespondsToDiff is the check nothing downstream performs: applying
+// reviewer/diff.patch to the base tree must reproduce reviewer/repository byte for
+// byte. A snapshot that does not correspond to the diff sends reviewers to line
+// numbers that fail citation validation after a stage has already been paid for.
+func TestSnapshotCorrespondsToDiff(t *testing.T) {
+	dir := t.TempDir()
+	fx := writeFixture(t, dir)
+	out := filepath.Join(dir, "bundle")
+	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: out, EvaluatorOut: filepath.Join(dir, "evaluator")}
+	if _, err := Export(context.Background(), opt); err != nil {
+		t.Fatal(err)
+	}
+	var manifest ControlManifest
+	raw, err := os.ReadFile(bundlePath(out, "control/manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	// Materialize the base_commit tree, apply the published patch to it, and compare.
+	applied := filepath.Join(dir, "applied")
+	repo := gitx.OpenRepository(fx.repoDir)
+	if _, err := repo.MaterializeTree(context.Background(), manifest.BaseCommit, applied); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "apply", "--verbose", bundlePath(out, "reviewer/diff.patch"))
+	cmd.Dir = applied
+	if outBytes, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("diff.patch does not apply to the base tree: %s: %v", outBytes, err)
+	}
+
+	want := treeContents(t, bundlePath(out, "reviewer/repository"))
+	got := treeContents(t, applied)
+	if len(want) != len(got) {
+		t.Fatalf("snapshot has %d files, applying the diff to the base tree yields %d", len(want), len(got))
+	}
+	for path, body := range want {
+		if got[path] != body {
+			t.Fatalf("%s differs between the snapshot and the applied diff", path)
+		}
+	}
+}
+
+// treeContents reads a directory tree into a map of slash path to content.
+func treeContents(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out[filepath.ToSlash(rel)] = string(body)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestExportRejectsUnmaterializableTreeEntries covers the entries that cannot be
+// published as plain regular files. Skipping any of them would silently break the
+// correspondence TestSnapshotCorrespondsToDiff asserts, so the export fails closed.
+func TestExportRejectsUnmaterializableTreeEntries(t *testing.T) {
+	cases := map[string]func(t *testing.T, dir string){
+		"symlink": func(t *testing.T, dir string) {
+			if err := os.Symlink("base.txt", filepath.Join(dir, "link.txt")); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, dir, "add", "link.txt")
+		},
+		"git metadata name": func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/master\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, dir, "add", "HEAD")
+		},
+	}
+	for name, taint := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			fx := writeFixture(t, dir)
+			taint(t, fx.repoDir)
+			runGit(t, fx.repoDir, "commit", "-q", "-m", "taint")
+			headSHA := runGit(t, fx.repoDir, "rev-parse", "HEAD")
+
+			// Re-point the record and cache at the tainted head so identity still agrees.
+			record := strings.ReplaceAll(fx.record, fx.headSHA, headSHA)
+			if err := os.WriteFile(fx.input, []byte(record+"\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			var b collector.RawPRBundle
+			raw, _ := os.ReadFile(fx.cache)
+			_ = json.Unmarshal(raw, &b)
+			b.PR.Head.SHA = &headSHA
+			raw, _ = json.Marshal(b)
+			if err := os.WriteFile(fx.cache, raw, 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			prospOut := filepath.Join(dir, "bundle")
+			opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: prospOut, EvaluatorOut: filepath.Join(dir, "evaluator")}
+			if _, err := Export(context.Background(), opt); err == nil {
+				t.Fatalf("%s was materialized into the snapshot instead of failing the export", name)
+			}
+			if _, err := os.Stat(prospOut); !os.IsNotExist(err) {
+				t.Fatal("a bundle was published despite an inadmissible tree entry")
+			}
+		})
 	}
 }
 
@@ -284,7 +569,7 @@ func TestExportFailureWritesNoPartialCase(t *testing.T) {
 	prospOut := filepath.Join(dir, "prospective-3")
 	evalOut := filepath.Join(dir, "evaluator-3")
 	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: prospOut, EvaluatorOut: evalOut}
-	if err := Export(context.Background(), opt); err == nil {
+	if _, err := Export(context.Background(), opt); err == nil {
 		t.Fatal("expected forbidden-value failure")
 	}
 	if _, err := os.Stat(prospOut); !os.IsNotExist(err) {
@@ -326,7 +611,7 @@ func TestExportRejectsMismatchedCacheIdentity(t *testing.T) {
 			prospOut := filepath.Join(t.TempDir(), "prospective")
 			evalOut := filepath.Join(t.TempDir(), "evaluator")
 			opt := Options{CorrelatedInput: fx.input, CacheFile: cachePath, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: prospOut, EvaluatorOut: evalOut}
-			if err := Export(context.Background(), opt); err == nil {
+			if _, err := Export(context.Background(), opt); err == nil {
 				t.Fatalf("%s: expected identity validation failure", name)
 			}
 			if _, err := os.Stat(prospOut); !os.IsNotExist(err) {
@@ -346,7 +631,7 @@ func TestExportRejectsExistingOutputRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: prospOut, EvaluatorOut: evalOut}
-	if err := Export(context.Background(), opt); err == nil {
+	if _, err := Export(context.Background(), opt); err == nil {
 		t.Fatal("expected refusal when prospective-out already exists")
 	}
 	if _, err := os.Stat(evalOut); !os.IsNotExist(err) {

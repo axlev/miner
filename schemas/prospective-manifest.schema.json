@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://miner.local/schemas/prospective-manifest.schema.json",
-  "title": "Prospective case manifest (manifest.json)",
-  "description": "Versioned, engine-visible descriptor of one prospective case directory, written by `miner prospective-export` as prospective/manifest.json alongside metadata.json and change.patch. Matches internal/prospectiveexport.Manifest and internal/prospectiveexport.ValidateManifest exactly. This is the only file in the prospective directory permitted to carry head_sha/comparison_base_sha; metadata.json's six-field reviewer allowlist deliberately omits them. See docs/export-contract.md §9-§10.",
+  "title": "Prospective bundle control manifest (control/manifest.json)",
+  "description": "Engine-only routing and identity for one prospective bundle, written by `miner prospective-export` as <bundle-root>/control/manifest.json. Matches internal/prospectiveexport.ControlManifest and internal/prospectiveexport.ValidateControlManifest exactly. It lives under control/, which the engine never mounts to a reasoner, so it may carry the repository/commit identity that reviewer/metadata.json's allowlist deliberately omits. Integrity is not carried here: control/checksums.sha256 covers every file under reviewer/. See docs/export-contract.md §9-§10 and engine-runner's docs/prospective-bundle-contract.md.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "case_id", "repository", "cutoff_timestamp", "comparison_base_sha", "head_sha", "artifacts"],
+  "required": ["schema_version", "case_id", "repository", "cutoff_timestamp", "base_commit", "cutoff_commit", "snapshot_format"],
   "properties": {
     "schema_version": {
-      "const": "miner/prospective-case/v1",
-      "description": "Fixed contract version identifier; consumers must reject any other value."
+      "const": "engine-manifest/v1",
+      "description": "Fixed contract version identifier; the engine's boundary validator rejects any other value."
     },
     "case_id": {
       "type": "string",
@@ -24,37 +24,21 @@
     "cutoff_timestamp": {
       "type": "string",
       "format": "date-time",
-      "description": "RFC3339Nano UTC benchmark-view cutoff; must match metadata.json's cutoff_timestamp."
+      "description": "RFC3339Nano UTC benchmark-view cutoff; must match reviewer/metadata.json's cutoff_timestamp."
     },
-    "comparison_base_sha": {
+    "base_commit": {
       "type": "string",
       "pattern": "^[0-9a-fA-F]{40}$",
-      "description": "Git merge-base of original.base_sha and original.head_sha, resolved locally via `git merge-base` (not merely copied from the cached provider response)."
+      "description": "Git merge-base of original.base_sha and original.head_sha, resolved locally via `git merge-base` (not merely copied from the cached provider response). This is the pre-image reviewer/diff.patch is taken from."
     },
-    "head_sha": {
+    "cutoff_commit": {
       "type": "string",
       "pattern": "^[0-9a-fA-F]{40}$",
-      "description": "PR head SHA, cross-checked against the cache bundle's head SHA before publication."
+      "description": "PR head SHA, cross-checked against the cache bundle's head SHA before publication. Its tree is what reviewer/repository/ materializes, and it is the post-image reviewer/diff.patch describes."
     },
-    "artifacts": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["metadata.json", "change.patch"],
-      "properties": {
-        "metadata.json": { "$ref": "#/$defs/artifactHash" },
-        "change.patch": { "$ref": "#/$defs/artifactHash" }
-      },
-      "description": "SHA-256 of every other file published in the same prospective directory; a consumer must recompute and verify each before trusting the directory."
-    }
-  },
-  "$defs": {
-    "artifactHash": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["sha256"],
-      "properties": {
-        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
-      }
+    "snapshot_format": {
+      "const": "directory-snapshot/v1",
+      "description": "Shape of reviewer/repository/: a plain directory tree of regular files, not a Git repository and not a patch to be applied."
     }
   }
 }

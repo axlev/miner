@@ -186,10 +186,10 @@ one metadata file and canonical patch per candidate commit, logical-patch manife
 and a top-level provenance and artifact-hash manifest. Missing Git objects are
 recorded and do not abort the export.
 
-#### Export Prospective Reviewer Metadata
+#### Export a Prospective Bundle
 
-Create a versioned, hash-verified prospective case in one caller-supplied root, and
-the corresponding evaluator-only artifacts in a separate root:
+Create an engine-ingestible prospective bundle in one caller-supplied root, and the
+corresponding evaluator-only artifacts in a separate root:
 
 ```bash
 go run ./cmd/miner prospective-export \
@@ -205,28 +205,71 @@ go run ./cmd/miner prospective-export \
 `--case-id` is optional; when omitted, the miner generates an opaque identifier
 (`case-<16 hex chars>`, a SHA-256 of repository/PR/cutoff) instead of a caller-supplied,
 PR-derived string like `case-15624`, so the directory name itself does not disclose the
-PR number. The command prints the generated ID.
+PR number.
 
-`--prospective-out` receives exactly `manifest.json`, `metadata.json`, and
-`change.patch` — the complete engine-visible package, safe to hand to
-`benchmark-engine` recursively since it contains no evaluator-only files.
-`manifest.json` conforms to `schemas/prospective-manifest.schema.json`: it carries
-the resolved `comparison_base_sha` (the local Git merge-base of the PR's base and
-head, not merely copied from the cached provider response), `head_sha`, and a
-SHA-256 for every other artifact in the directory. `change.patch` is the canonical
-`git diff` from that merge-base to head. `metadata.json` remains the same six-field
-reviewer allowlist (`schemas/reviewer-metadata.schema.json`) and never contains
-`head_sha`/`comparison_base_sha`.
+`--prospective-out` receives the bundle root that `engine-runner` accepts as
+`bench -bundle`:
+
+```text
+<prospective-out>/
+  reviewer/                 everything a reasoner may ever see
+    repository/             materialized source snapshot of cutoff_commit
+    diff.patch              the admissible diff
+    metadata.json           reviewer-visible metadata
+  control/                  engine-only; never mounted to a reasoner
+    manifest.json           routing and identity
+    checksums.sha256        integrity over every reviewer/ file
+```
+
+`reviewer/repository/` is a plain directory tree of regular files, written straight
+from the Git object database — there is no checkout, no `.git`, and no post-mount
+step that could reintroduce contamination after validation. It is the tree of
+`cutoff_commit`, and `reviewer/diff.patch` is `git diff <base_commit> <cutoff_commit>`
+over the same two objects, so the diff describes exactly the files in the snapshot.
+Any tree entry that cannot be published as a regular file — a symlink, a submodule
+gitlink, or a name a consumer reads as Git metadata — fails the export rather than
+being skipped, because skipping it would silently break that correspondence.
+
+`control/manifest.json` conforms to `schemas/prospective-manifest.schema.json` and
+pins `engine-manifest/v1`: an opaque `case_id`, `repository`, `cutoff_timestamp`, the
+locally resolved `base_commit` (Git merge-base of the PR's base and head, not merely
+the cached provider value), `cutoff_commit`, and `snapshot_format`.
+`control/checksums.sha256` is one `sha256sum`-format line per regular file under
+`reviewer/`, with paths relative to the bundle root; it must describe exactly that
+set of files, so a stray file is caught even when its name looks innocent.
+
+`reviewer/metadata.json` conforms to `schemas/reviewer-metadata.schema.json`: the
+same closed reviewer allowlist as before plus a pinned
+`"schema_version": "reviewer-metadata/v1"`, and never `base_commit`/`cutoff_commit`.
+
+Before publishing, the miner re-derives the consumer's admissibility rules against the
+built bundle. Layout, irregular files, Git metadata, pinned schema versions, and
+checksum agreement fail the export. The lexical oracle-name heuristic applied inside
+the source snapshot only warns on stderr: that vocabulary belongs to the upstream
+repository, and the engine's protocol has a waiver for exactly those paths, so they are
+reported for a human to judge rather than renamed or dropped.
 
 `--evaluator-out` receives `correlated-report.json` (the complete selected
 correlated record) and `metadata-export-audit.json` (per-field provenance for every
-metadata.json decision).
+metadata.json decision). It is never under the bundle root and the engine never
+traverses it.
 
 The cache bundle's PR number, repository, and base/head SHAs must match the
 selected correlated record's; a mismatch fails the export closed rather than
 silently combining identities from two different inputs. Neither output root may
 already exist, and both roots are fully built and validated before either is
 published, so a failure never leaves a partial or mixed case behind.
+
+To check a bundle against the engine before handing it over, from the `engine-runner`
+checkout:
+
+```bash
+go run ./cmd/bench -bundle <prospective-out> -case-id <case-id>
+```
+
+Boundary validation is deterministic, offline, and needs no credentials; a rejected
+bundle runs no stages and writes `boundary-validation.json` naming every rule that
+tripped and the path that tripped it.
 
 ---
 
@@ -238,7 +281,8 @@ Every record in the output JSONL file adheres to the following typed schema.
 uncommitted tree, or `unknown` if no VCS revision was embedded — e.g. outside a Git
 checkout, a shallow clone, or `-buildvcs=false`) rather than a fixed string; the
 value below is illustrative only. See also `schemas/` for the
-prospective-case, reviewer-metadata, and oracle (retrospective) manifest contracts.
+prospective-bundle control manifest, reviewer-metadata, and oracle (retrospective)
+manifest contracts.
 
 ```json
 {

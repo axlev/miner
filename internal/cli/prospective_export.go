@@ -32,10 +32,14 @@ var prospectiveExportCmd = &cobra.Command{
 			ProspectiveOut:  f.prospectiveOut,
 			EvaluatorOut:    f.evaluatorOut,
 		}
-		if err := prospectiveexport.Export(cmd.Context(), opt); err != nil {
+		warnings, err := prospectiveexport.Export(cmd.Context(), opt)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("Exported prospective case to %s (evaluator-only artifacts at %s)\n", f.prospectiveOut, f.evaluatorOut)
+		for _, w := range warnings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", w)
+		}
+		fmt.Printf("Exported prospective bundle to %s (evaluator-only artifacts at %s)\n", f.prospectiveOut, f.evaluatorOut)
 		return nil
 	},
 }
@@ -48,7 +52,7 @@ func init() {
 	prospectiveExportCmd.Flags().IntVarP(&f.pr, "pr", "p", 0, "PR number to select")
 	prospectiveExportCmd.Flags().StringVar(&f.cutoff, "cutoff", "", "Benchmark cutoff timestamp (RFC3339)")
 	prospectiveExportCmd.Flags().StringVar(&f.caseID, "case-id", "", "Case identifier override; a neutral opaque ID is generated when omitted")
-	prospectiveExportCmd.Flags().StringVar(&f.prospectiveOut, "prospective-out", "", "New output directory for the engine-visible prospective case")
+	prospectiveExportCmd.Flags().StringVar(&f.prospectiveOut, "prospective-out", "", "New output directory for the engine-ingestible prospective bundle (reviewer/ + control/)")
 	prospectiveExportCmd.Flags().StringVar(&f.evaluatorOut, "evaluator-out", "", "New output directory for evaluator-only artifacts")
 	for _, name := range []string{"input", "cache-file", "repo", "pr", "cutoff", "prospective-out", "evaluator-out"} {
 		_ = prospectiveExportCmd.MarkFlagRequired(name)

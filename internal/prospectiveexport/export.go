@@ -23,25 +23,34 @@ import (
 
 const SchemaVersion = "1.0.0"
 
-// ManifestSchemaVersion identifies the versioned public prospective-case manifest contract.
-const ManifestSchemaVersion = "miner/prospective-case/v1"
+// ControlManifestSchemaVersion pins the engine-only routing and identity contract.
+// It lives in control/, which is never mounted to a reasoner.
+const ControlManifestSchemaVersion = "engine-manifest/v1"
 
-// ManifestArtifact records the SHA-256 of one file published in a prospective case directory.
-type ManifestArtifact struct {
-	SHA256 string `json:"sha256"`
-}
+// MetadataSchemaVersion pins the reviewer-visible metadata contract. It is carried
+// inside metadata.json itself, so a metadata file separated from its bundle is still
+// self-identifying.
+const MetadataSchemaVersion = "reviewer-metadata/v1"
 
-// Manifest is the versioned, engine-visible descriptor of a prospective case directory.
-// It intentionally carries repository/PR-comparison identity (head_sha, comparison_base_sha)
-// that metadata.json's six-field reviewer allowlist deliberately omits.
-type Manifest struct {
-	SchemaVersion     string                      `json:"schema_version"`
-	CaseID            string                      `json:"case_id"`
-	Repository        string                      `json:"repository"`
-	CutoffTimestamp   string                      `json:"cutoff_timestamp"`
-	ComparisonBaseSHA string                      `json:"comparison_base_sha"`
-	HeadSHA           string                      `json:"head_sha"`
-	Artifacts         map[string]ManifestArtifact `json:"artifacts"`
+// SnapshotFormat names the shape of reviewer/repository: a plain directory tree,
+// not a Git repository and not a patch to be applied.
+const SnapshotFormat = "directory-snapshot/v1"
+
+// ControlManifest is the engine-only descriptor of a prospective bundle. It carries
+// the repository/commit identity that metadata.json's reviewer allowlist deliberately
+// omits; being under control/ it is unreachable from a reasoner.
+type ControlManifest struct {
+	SchemaVersion   string `json:"schema_version"`
+	CaseID          string `json:"case_id"`
+	Repository      string `json:"repository"`
+	CutoffTimestamp string `json:"cutoff_timestamp"`
+	// BaseCommit is the locally resolved Git merge-base of the PR's base and head:
+	// the commit the admissible diff is taken from.
+	BaseCommit string `json:"base_commit"`
+	// CutoffCommit is the commit whose tree is materialized at reviewer/repository
+	// and whose content the diff's post-image describes.
+	CutoffCommit   string `json:"cutoff_commit"`
+	SnapshotFormat string `json:"snapshot_format"`
 }
 
 var fullSHAPattern = func(s string) bool {
@@ -66,6 +75,7 @@ func GenerateCaseID(repository string, pr int, cutoff time.Time) string {
 
 // Metadata is the complete and intentionally small reviewer-facing schema.
 type Metadata struct {
+	SchemaVersion   string   `json:"schema_version"`
 	Repository      string   `json:"repository"`
 	Title           *string  `json:"title,omitempty"`
 	Description     *string  `json:"description,omitempty"`
@@ -182,7 +192,7 @@ func Build(bundle collector.RawPRBundle, repository string, cutoff time.Time) (M
 		return Metadata{}, nil, fmt.Errorf("cached pull request is missing")
 	}
 	cutoff = cutoff.UTC()
-	meta := Metadata{Repository: repository, CutoffTimestamp: cutoff.Format(time.RFC3339Nano)}
+	meta := Metadata{SchemaVersion: MetadataSchemaVersion, Repository: repository, CutoffTimestamp: cutoff.Format(time.RFC3339Nano)}
 	decisions := map[string]FieldDecision{}
 	decisions["repository"] = FieldDecision{Included: true, Source: "correlated original.repository", ValidAt: cutoff.Format(time.RFC3339Nano), ReconstructionMethod: "stable repository identity"}
 	decisions["cutoff_timestamp"] = FieldDecision{Included: true, Source: "export argument", ValidAt: cutoff.Format(time.RFC3339Nano), ReconstructionMethod: "explicit benchmark cutoff"}
@@ -294,7 +304,7 @@ func reconstructTitle(current string, events []*github.IssueEvent, complete bool
 	return title, times, true
 }
 
-var allowedKeys = map[string]bool{"repository": true, "title": true, "description": true, "cutoff_timestamp": true, "base_branch": true, "commit_messages": true}
+var allowedKeys = map[string]bool{"schema_version": true, "repository": true, "title": true, "description": true, "cutoff_timestamp": true, "base_branch": true, "commit_messages": true}
 
 // ValidateNormalized enforces the closed reviewer schema on serialized bytes.
 func ValidateNormalized(data []byte, cutoff time.Time, forbidden []string) error {
@@ -320,6 +330,9 @@ func ValidateNormalized(data []byte, cutoff time.Time, forbidden []string) error
 			return fmt.Errorf("nested raw payload rejected in %q", k)
 		}
 	}
+	if meta.SchemaVersion != MetadataSchemaVersion {
+		return fmt.Errorf("reviewer metadata schema_version is %q, want the pinned %q", meta.SchemaVersion, MetadataSchemaVersion)
+	}
 	if meta.Repository == "" || meta.CutoffTimestamp == "" {
 		return fmt.Errorf("repository and cutoff_timestamp are required")
 	}
@@ -338,14 +351,16 @@ func ValidateNormalized(data []byte, cutoff time.Time, forbidden []string) error
 	return nil
 }
 
-var manifestAllowedKeys = map[string]bool{"schema_version": true, "case_id": true, "repository": true, "cutoff_timestamp": true, "comparison_base_sha": true, "head_sha": true, "artifacts": true}
+var manifestAllowedKeys = map[string]bool{"schema_version": true, "case_id": true, "repository": true, "cutoff_timestamp": true, "base_commit": true, "cutoff_commit": true, "snapshot_format": true}
 
-// ValidateManifest enforces the closed public manifest schema, including that every
-// declared artifact hash matches the corresponding file's actual bytes.
-func ValidateManifest(data []byte, cutoff time.Time, artifactBytes map[string][]byte) error {
+// ValidateControlManifest enforces the closed engine-only manifest schema. Artifact
+// integrity is no longer carried here: control/checksums.sha256 covers every file
+// under reviewer/, which is strictly stronger because it is exhaustive in both
+// directions — a file present but unlisted is as much a signal as a digest mismatch.
+func ValidateControlManifest(data []byte, cutoff time.Time) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	var m Manifest
+	var m ControlManifest
 	if err := dec.Decode(&m); err != nil {
 		return fmt.Errorf("strict manifest schema: %w", err)
 	}
@@ -362,14 +377,17 @@ func ValidateManifest(data []byte, cutoff time.Time, artifactBytes map[string][]
 			return fmt.Errorf("unknown manifest field %q", k)
 		}
 	}
-	if m.SchemaVersion != ManifestSchemaVersion {
-		return fmt.Errorf("unsupported manifest schema_version %q", m.SchemaVersion)
+	if m.SchemaVersion != ControlManifestSchemaVersion {
+		return fmt.Errorf("control manifest schema_version is %q, want the pinned %q", m.SchemaVersion, ControlManifestSchemaVersion)
+	}
+	if m.SnapshotFormat != SnapshotFormat {
+		return fmt.Errorf("unsupported snapshot_format %q", m.SnapshotFormat)
 	}
 	if m.CaseID == "" || m.Repository == "" || m.CutoffTimestamp == "" {
 		return fmt.Errorf("case_id, repository, and cutoff_timestamp are required")
 	}
-	if !fullSHAPattern(m.ComparisonBaseSHA) || !fullSHAPattern(m.HeadSHA) {
-		return fmt.Errorf("comparison_base_sha and head_sha must be 40-character hex SHAs")
+	if !fullSHAPattern(m.BaseCommit) || !fullSHAPattern(m.CutoffCommit) {
+		return fmt.Errorf("base_commit and cutoff_commit must be 40-character hex SHAs")
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, m.CutoffTimestamp)
 	if err != nil {
@@ -377,40 +395,6 @@ func ValidateManifest(data []byte, cutoff time.Time, artifactBytes map[string][]
 	}
 	if !parsed.Equal(cutoff.UTC()) {
 		return fmt.Errorf("manifest cutoff does not match requested cutoff")
-	}
-	for name, want := range artifactBytes {
-		a, ok := m.Artifacts[name]
-		if !ok {
-			return fmt.Errorf("manifest is missing artifact entry %q", name)
-		}
-		if got := digest(want); a.SHA256 != got {
-			return fmt.Errorf("manifest artifact hash mismatch for %q: manifest=%s actual=%s", name, a.SHA256, got)
-		}
-	}
-	for name := range m.Artifacts {
-		if _, ok := artifactBytes[name]; !ok {
-			return fmt.Errorf("manifest references unknown artifact %q", name)
-		}
-	}
-	return nil
-}
-
-var prospectiveAllowedFiles = map[string]bool{"manifest.json": true, "metadata.json": true, "change.patch": true}
-
-// validateProspectiveDirectory enforces an exact filename allowlist on a fully built
-// prospective directory so no unexpected file can be published into the engine-visible root.
-func validateProspectiveDirectory(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	if len(entries) != len(prospectiveAllowedFiles) {
-		return fmt.Errorf("prospective directory has %d entries, expected exactly %d", len(entries), len(prospectiveAllowedFiles))
-	}
-	for _, e := range entries {
-		if e.IsDir() || !prospectiveAllowedFiles[e.Name()] {
-			return fmt.Errorf("unexpected prospective artifact %q", e.Name())
-		}
 	}
 	return nil
 }
@@ -541,26 +525,34 @@ func crossCheckIdentity(bundle collector.RawPRBundle, pr int, repository, baseSH
 	return nil
 }
 
-// Export builds a versioned, hash-verified prospective case directory and a separate
-// evaluator-only directory, each published atomically to its own caller-supplied root.
-func Export(ctx context.Context, opt Options) error {
+// Export builds a prospective bundle and a separate evaluator-only directory, each
+// published atomically to its own caller-supplied root.
+//
+// The bundle conforms to the engine's ingest contract: a reviewer/ tree holding the
+// materialized source snapshot, the admissible diff, and reviewer-visible metadata,
+// and a control/ tree holding engine-only routing identity and integrity. The two
+// are separate directories because the engine allow-list-copies only the three named
+// entries under reviewer/, so control/ cannot reach a reasoner even by accident.
+//
+// It returns any advisory warnings raised while validating the built bundle.
+func Export(ctx context.Context, opt Options) ([]string, error) {
 	if opt.PR <= 0 || opt.CorrelatedInput == "" || opt.CacheFile == "" || opt.Repo == "" || opt.ProspectiveOut == "" || opt.EvaluatorOut == "" {
-		return fmt.Errorf("correlated input, cache file, repo, pr, cutoff, prospective-out, and evaluator-out are required")
+		return nil, fmt.Errorf("correlated input, cache file, repo, pr, cutoff, prospective-out, and evaluator-out are required")
 	}
 	if opt.CaseID != "" && (strings.ContainsAny(opt.CaseID, "/\\") || opt.CaseID == "." || opt.CaseID == "..") {
-		return fmt.Errorf("case-id must be a neutral path component")
+		return nil, fmt.Errorf("case-id must be a neutral path component")
 	}
 	raw, root, err := findRecord(opt.CorrelatedInput, opt.PR)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cacheRaw, err := os.ReadFile(opt.CacheFile)
 	if err != nil {
-		return fmt.Errorf("read cache bundle: %w", err)
+		return nil, fmt.Errorf("read cache bundle: %w", err)
 	}
 	var bundle collector.RawPRBundle
 	if err := json.Unmarshal(cacheRaw, &bundle); err != nil {
-		return fmt.Errorf("parse cache bundle: %w", err)
+		return nil, fmt.Errorf("parse cache bundle: %w", err)
 	}
 	var original struct {
 		Repository string `json:"repository"`
@@ -568,124 +560,153 @@ func Export(ctx context.Context, opt Options) error {
 		HeadSHA    string `json:"head_sha"`
 	}
 	if err := json.Unmarshal(root["original"], &original); err != nil {
-		return err
+		return nil, err
 	}
 	if err := crossCheckIdentity(bundle, opt.PR, original.Repository, original.BaseSHA, original.HeadSHA); err != nil {
-		return fmt.Errorf("prospective identity validation failed: %w", err)
+		return nil, fmt.Errorf("prospective identity validation failed: %w", err)
 	}
 
 	meta, decisions, err := Build(bundle, original.Repository, opt.Cutoff)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateDecisions(decisions, opt.Cutoff.UTC()); err != nil {
-		return fmt.Errorf("prospective provenance validation failed: %w", err)
+		return nil, fmt.Errorf("prospective provenance validation failed: %w", err)
 	}
 	if err := validateCommitMessages(meta, bundle, opt.Cutoff.UTC()); err != nil {
-		return fmt.Errorf("prospective commit validation failed: %w", err)
+		return nil, fmt.Errorf("prospective commit validation failed: %w", err)
 	}
 	normalized, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	normalized = append(normalized, '\n')
 	if err := ValidateNormalized(normalized, opt.Cutoff, forbiddenValues(root)); err != nil {
-		return fmt.Errorf("prospective validation failed: %w", err)
+		return nil, fmt.Errorf("prospective validation failed: %w", err)
 	}
 
+	// The diff and the snapshot are derived from the same two commit objects in the
+	// same repository: the patch's post-image is the tree of original.HeadSHA, and
+	// reviewer/repository is that same tree materialized. Correspondence is therefore
+	// a property of how they are produced, not a reconciliation step that could drift
+	// — which matters because nothing downstream re-checks that the diff describes the
+	// snapshot, and a reviewer citing a line the snapshot does not have fails a stage
+	// that has already been paid for.
 	repo := gitx.OpenRepository(opt.Repo)
 	patch, mergeBase, err := repo.CanonicalChangePatch(ctx, original.BaseSHA, original.HeadSHA)
 	if err != nil {
-		return fmt.Errorf("resolve canonical change patch: %w", err)
+		return nil, fmt.Errorf("resolve canonical change patch: %w", err)
 	}
 
 	caseID := opt.CaseID
 	if caseID == "" {
 		caseID = GenerateCaseID(original.Repository, opt.PR, opt.Cutoff)
 	}
-	manifest := Manifest{
-		SchemaVersion:     ManifestSchemaVersion,
-		CaseID:            caseID,
-		Repository:        original.Repository,
-		CutoffTimestamp:   opt.Cutoff.UTC().Format(time.RFC3339Nano),
-		ComparisonBaseSHA: mergeBase,
-		HeadSHA:           original.HeadSHA,
-		Artifacts: map[string]ManifestArtifact{
-			"metadata.json": {SHA256: digest(normalized)},
-			"change.patch":  {SHA256: digest(patch)},
-		},
+	manifest := ControlManifest{
+		SchemaVersion:   ControlManifestSchemaVersion,
+		CaseID:          caseID,
+		Repository:      original.Repository,
+		CutoffTimestamp: opt.Cutoff.UTC().Format(time.RFC3339Nano),
+		BaseCommit:      mergeBase,
+		CutoffCommit:    original.HeadSHA,
+		SnapshotFormat:  SnapshotFormat,
 	}
 	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	manifestBytes = append(manifestBytes, '\n')
-	if err := ValidateManifest(manifestBytes, opt.Cutoff, map[string][]byte{"metadata.json": normalized, "change.patch": patch}); err != nil {
-		return fmt.Errorf("manifest validation failed: %w", err)
+	if err := ValidateControlManifest(manifestBytes, opt.Cutoff); err != nil {
+		return nil, fmt.Errorf("manifest validation failed: %w", err)
 	}
 
 	if _, err := os.Stat(opt.ProspectiveOut); err == nil {
-		return fmt.Errorf("prospective output %q already exists; refusing to mix or overwrite case artifacts", opt.ProspectiveOut)
+		return nil, fmt.Errorf("prospective output %q already exists; refusing to mix or overwrite case artifacts", opt.ProspectiveOut)
 	} else if !os.IsNotExist(err) {
-		return err
+		return nil, err
 	}
 	if _, err := os.Stat(opt.EvaluatorOut); err == nil {
-		return fmt.Errorf("evaluator output %q already exists; refusing to mix or overwrite case artifacts", opt.EvaluatorOut)
+		return nil, fmt.Errorf("evaluator output %q already exists; refusing to mix or overwrite case artifacts", opt.EvaluatorOut)
 	} else if !os.IsNotExist(err) {
-		return err
+		return nil, err
 	}
 
 	prospectiveParent := filepath.Dir(opt.ProspectiveOut)
 	if err := os.MkdirAll(prospectiveParent, 0755); err != nil {
-		return err
+		return nil, err
 	}
 	prospectiveTmp, err := os.MkdirTemp(prospectiveParent, ".prospective-export-")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer os.RemoveAll(prospectiveTmp)
-	if err := os.WriteFile(filepath.Join(prospectiveTmp, "metadata.json"), normalized, 0644); err != nil {
-		return err
+	// MkdirTemp creates 0700; the published bundle root is bind-mounted read-only
+	// into a stage container that does not run as this user, so it has to be
+	// traversable.
+	if err := os.Chmod(prospectiveTmp, 0755); err != nil {
+		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(prospectiveTmp, "change.patch"), patch, 0644); err != nil {
-		return err
+	reviewerTmp := filepath.Join(prospectiveTmp, ReviewerDir)
+	controlTmp := filepath.Join(prospectiveTmp, ControlDir)
+	if err := os.MkdirAll(reviewerTmp, 0755); err != nil {
+		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(prospectiveTmp, "manifest.json"), manifestBytes, 0644); err != nil {
-		return err
+	if err := os.MkdirAll(controlTmp, 0755); err != nil {
+		return nil, err
 	}
-	if err := validateProspectiveDirectory(prospectiveTmp); err != nil {
-		return fmt.Errorf("prospective directory validation failed: %w", err)
+	if _, err := repo.MaterializeTree(ctx, original.HeadSHA, filepath.Join(reviewerTmp, SnapshotDir)); err != nil {
+		return nil, fmt.Errorf("materialize source snapshot: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(reviewerTmp, MetadataFile), normalized, 0644); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(reviewerTmp, DiffFile), patch, 0644); err != nil {
+		return nil, err
+	}
+	checksums, err := buildChecksums(prospectiveTmp)
+	if err != nil {
+		return nil, fmt.Errorf("build checksum manifest: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(controlTmp, ChecksumsFile), checksums, 0644); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(controlTmp, ControlManifestFile), manifestBytes, 0644); err != nil {
+		return nil, err
+	}
+	warnings, err := validateBundle(prospectiveTmp, normalized, manifestBytes, checksums)
+	if err != nil {
+		return nil, fmt.Errorf("prospective bundle validation failed: %w", err)
 	}
 
 	evaluatorParent := filepath.Dir(opt.EvaluatorOut)
 	if err := os.MkdirAll(evaluatorParent, 0755); err != nil {
-		return err
+		return nil, err
 	}
 	evaluatorTmp, err := os.MkdirTemp(evaluatorParent, ".evaluator-export-")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer os.RemoveAll(evaluatorTmp)
 	if err := os.WriteFile(filepath.Join(evaluatorTmp, "correlated-report.json"), append(append([]byte(nil), raw...), '\n'), 0644); err != nil {
-		return err
+		return nil, err
 	}
 	audit := Audit{SchemaVersion: SchemaVersion, CaseID: caseID, PRNumber: opt.PR, Cutoff: opt.Cutoff.UTC().Format(time.RFC3339Nano), InputRecordSHA256: digest(raw), CacheBundleSHA256: digest(cacheRaw), Fields: decisions, Validation: "passed"}
 	ab, err := json.MarshalIndent(audit, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ab = append(ab, '\n')
 	if err := os.WriteFile(filepath.Join(evaluatorTmp, "metadata-export-audit.json"), ab, 0644); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Both roots are fully built and validated before either rename, bounding the
 	// partial-publication window to the two filesystem rename calls themselves.
 	if err := os.Rename(prospectiveTmp, opt.ProspectiveOut); err != nil {
-		return err
+		return nil, err
 	}
 	if err := os.Rename(evaluatorTmp, opt.EvaluatorOut); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return warnings, nil
 }
