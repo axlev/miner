@@ -54,6 +54,16 @@ notes as a substitute for reading the docs — they drift. Update `docs/export-c
   actually safe against `docs/export-contract.md` §7.
 - Prefer closed schemas, deterministic ordering, immutable outputs, explicit schema versions,
   canonical patches, and SHA-256 artifact hashes for anything new you add to an export path.
+- **Treat the bundle wire contract as frozen in both directions.** Do not change the
+  `reviewer/` + `control/` layout, the entry names, the pinned schema-version strings, the
+  reviewer metadata field allowlist, or the checksum-manifest semantics unless a new product
+  requirement cannot be implemented without it — not for tidiness, naming, or a nicer shape.
+  If a requirement does force a change, bump the schema version rather than redefining an
+  existing one, and record why in the Decisions log. This binds the miner as much as the
+  engine. The oracle-name heuristic lists are explicitly outside the freeze: the engine's
+  contract says that list is meant to be tuned against real exports, tuning it changes no
+  bundle's structure, and it is warnings-only here — so it may move on either side without
+  being treated as a break.
 - **The boundary rules are mirrored across two repos, and nothing detects drift.**
   `engine-runner/internal/boundaryvalidator` is authoritative for what the engine accepts.
   `validateBundle` and its constants in `internal/prospectiveexport/bundle.go`

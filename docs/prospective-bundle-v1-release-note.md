@@ -112,6 +112,31 @@ catches a stray file even when the name heuristic would not.
 
 `go vet ./...` and `go test ./...` pass on the miner side.
 
+## Requested norm: treat the wire contract as frozen
+
+The bundle format is now a working interface between two repositories that share no
+memory and no automatic consistency check. So the proposed default, in both directions:
+
+> **Do not change the protocol between us unless a new product requirement cannot be
+> implemented without it.** Not for tidiness, naming, or a nicer shape. If a requirement
+> does force a change, bump the schema version rather than redefining an existing one,
+> and say so explicitly — a silently redefined `engine-manifest/v1` is worse than a
+> loudly introduced `v2`.
+
+This binds the miner equally. It will not reshape `reviewer/`, rename an artifact, add a
+metadata field, or move identity between `control/` and `reviewer/` on its own judgment.
+
+The freeze covers the **wire contract**: the `reviewer/` + `control/` layout, the entry
+names, the pinned schema-version strings, the reviewer metadata field allowlist, and the
+checksum-manifest semantics. Those are what make a bundle ingestible or not.
+
+It deliberately does **not** cover the oracle-name heuristics. Your own contract says
+that list "is meant to be tuned against real exports", and it should be — real
+repositories will trip `solution` and `verdict` on legitimate source. Tuning it changes
+no bundle's structure, it is waivable by protocol on your side, and it is warnings-only
+on the miner's side, so it can move freely without breaking anything. Tune it and say so;
+the miner will follow when convenient rather than treating it as a break.
+
 ## The mirror, and how it breaks
 
 `miner`'s exporter runs its own pre-publication check (`validateBundle`,
@@ -178,6 +203,51 @@ constants in `internal/prospectiveexport/export.go`), then re-run the verificati
 - Contamination risks 1, 2, 6, 7, 9, and 10 in the miner's `docs/export-contract.md` §7
   remain open; risk 8 ("no prospective code snapshot is supplied") is closed by this
   change.
+
+## Appendix: proposed rules for `engine-runner/AGENTS.md`
+
+The norm above only works if it exists on both sides. The miner's `AGENTS.md` carries its
+half. This is the symmetric half, written from `coder-engine-runner`'s perspective and
+ready to paste; the paths are local to that repo.
+
+```markdown
+## Cross-repo contract with `miner`
+
+- **Treat the prospective bundle wire contract as frozen in both directions.** Do not
+  change the `reviewer/` + `control/` layout, the entry names, the pinned schema-version
+  strings (`engine-manifest/v1`, `reviewer-metadata/v1`), the reviewer metadata field
+  allowlist, or the checksum-manifest semantics unless a new product requirement cannot be
+  implemented without it — not for tidiness, naming, or a nicer shape. If a requirement
+  does force a change, bump the schema version rather than redefining an existing one, and
+  say so explicitly in your report: a silently redefined `v1` is worse than a loudly
+  introduced `v2`. This binds the engine as much as the miner.
+
+- **The miner hand-maintains a copy of your boundary rules, and nothing detects drift.**
+  `miner/internal/prospectiveexport/bundle.go` duplicates the structural rules in
+  `internal/boundaryvalidator` so a bad bundle fails at export time rather than at ingest.
+  Go forbids importing another module's `internal/` packages, so neither side can import
+  the other and no test can compare them. If you tighten, add, or rename a rule in
+  `boundaryvalidator`, the miner keeps publishing bundles you will reject — silently, until
+  someone updates it by hand. There is no shared memory between `coder-miner` and
+  `coder-engine-runner` (`docs/system-design.md` §14), so no session is notified
+  automatically. When you change a boundary rule, state it prominently enough that it can
+  be carried to the miner by hand.
+
+- **The oracle-name heuristics are exempt from the freeze.** `oracleShapedSubstrings`,
+  `oracleArtifactBasenames`, and `highSignalOracleSubstrings` are meant to be tuned against
+  real exports, as `docs/prospective-bundle-contract.md` says. Tuning them changes no
+  bundle's structure and they are warnings-only on the miner's side, so they may move on
+  either side without being treated as a break. Expect `solution` and `verdict` to
+  false-positive on legitimate third-party source; prefer `WaivedOracleShapedPaths` over
+  narrowing a rule, and expect the miner to report such paths rather than renaming them.
+
+- **`reviewer/repository/` is the tree of `cutoff_commit`, not `base_commit`.** This is
+  deliberate: your own fixtures hold post-change content, and
+  `internal/orchestrator/evidence.go` fails any citation naming a line outside the snapshot
+  file, so a base-tree snapshot would fail every citation of an added line. Do not "correct"
+  this to the base tree without raising it explicitly — it would invalidate every bundle the
+  miner has produced.
+```
 
 ## Reference
 
