@@ -76,8 +76,11 @@ var cohortVerifyFlags struct {
 }
 
 var cohortVerifyCmd = &cobra.Command{
-	Use:   "cohort-verify",
-	Short: "Prove a shortlisted cohort by exporting it and validating every bundle",
+	Use: "cohort-verify",
+	// A non-ready cohort is a reported result, not a usage mistake; without this
+	// cobra prints the flag list over the report the command just wrote.
+	SilenceUsage: true,
+	Short:        "Prove a shortlisted cohort by exporting it and validating every bundle",
 	Long: `Runs the real prospective export for each shortlisted PR, then — with --bench-repo —
 submits each resulting bundle to engine-runner's own boundary validator.
 

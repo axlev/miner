@@ -193,10 +193,21 @@ property of how the two are produced rather than a reconciliation step, which ma
 because nothing downstream re-checks it: the engine validates that every evidence
 citation names a file present in `reviewer/repository/` with an in-range line span, so
 a snapshot that did not correspond would send reviewers to locations that fail
-validation after a stage had already been paid for. A tree entry that cannot be
-published as a plain regular file — a symlink, a submodule gitlink, or a path segment a
-consumer reads as Git metadata — fails the export rather than being skipped, because
-skipping one would silently break exactly that correspondence.
+validation after a stage had already been paid for. A tree entry that cannot be published as part of a plain source snapshot — a submodule
+gitlink, an unsupported mode, a Git-metadata path segment, or a symlink not provably
+confined to the tree — fails the export rather than being skipped, because skipping one
+would silently break exactly that correspondence.
+
+**Updated 2026-09-10:** in-tree relative symlinks are admissible and are materialized as
+symlinks. `engine-runner` relaxed its blanket rejection after FRR proved it unusable —
+FRR carries ~77 in-tree links under `tests/topotests/` in every commit, so all 1,667
+candidates failed on links no PR had touched. `gitx.ListTree` now admits a link only when
+its target is relative, resolves inside the tree, exists, and is not itself a link;
+resolution is lexical against the Git tree listing, so nothing is followed during
+checking. Dereferencing was considered and rejected: it places identical content at two
+paths, so a diff touching a symlink *target* no longer reproduces the snapshot (55 of
+1,667 FRR candidates). Symlinks are excluded from `control/checksums.sha256`, matching how
+the engine builds its comparison set — a listed link would read as "listed but absent".
 
 `control/manifest.json` conforms to `schemas/prospective-manifest.schema.json` and pins
 `engine-manifest/v1`: an opaque miner-generated `case_id`, `repository`,
@@ -216,7 +227,13 @@ information belongs in the manifest; the engine requires it in the metadata file
 so that a metadata file separated from its bundle is still self-identifying. It still
 never carries `base_commit`/`cutoff_commit`.
 
-**Updated 2026-09-10:** the exporter keeps no copy of the engine's admissibility rules.
+**Updated 2026-09-10:** the engine enforces containment at two independent points —
+`internal/boundaryvalidator` (may this bundle run?) and `internal/contextbuilder` (what
+goes into a stage container?). Verification therefore runs the full `bench` rather than
+the validator alone; a validator-only check would miss the second gate, turning a clean
+pre-spend rejection into a failure after a container has started.
+
+The exporter keeps no copy of the engine's admissibility rules.
 A mirror (`validateBundle`) existed briefly and was deleted — two hand-maintained rule
 tables in two repositories, with no way to compare them because Go forbids importing
 another module's `internal/` packages, meant a rule tightened upstream would leave the

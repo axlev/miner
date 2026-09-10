@@ -111,7 +111,13 @@ func Verify(ctx context.Context, opt VerifyOptions) ([]CaseResult, error) {
 		res.CaseID = prospectiveexport.GenerateCaseID(rec.Original.Repository, pr, cutoff)
 		bundle := filepath.Join(opt.OutDir, res.CaseID)
 		res.BundlePath = bundle
-		res.BenchCommand = fmt.Sprintf("go run ./cmd/bench -bundle %s -case-id %s", bundle, res.CaseID)
+		// Printed for a human to run from the engine checkout, so the bundle path must
+		// be absolute for the same reason runBench absolutises it.
+		absBundle := bundle
+		if a, err := filepath.Abs(bundle); err == nil {
+			absBundle = a
+		}
+		res.BenchCommand = fmt.Sprintf("go run ./cmd/bench -bundle %s -case-id %s", absBundle, res.CaseID)
 
 		err := prospectiveexport.Export(ctx, prospectiveexport.Options{
 			CorrelatedInput: inputPath,
@@ -158,11 +164,28 @@ func writeRecords(path string, records []model.PRCandidateRecord) error {
 // runBench invokes the engine's own validator. The engine is a separate Go module
 // and its validator lives under internal/, which Go forbids importing across module
 // boundaries — so shelling out is the only mechanism available, not a shortcut.
+//
+// Every path handed to bench is made absolute first. The command runs with its working
+// directory set to the engine checkout, so a relative path would resolve against that
+// repository instead of this one: bench would fail to find the bundle and would write
+// its results into the engine's tree. Both happened before this was fixed.
 func runBench(ctx context.Context, benchRepo, bundle, caseID, outDir string) error {
+	absBundle, err := filepath.Abs(bundle)
+	if err != nil {
+		return fmt.Errorf("resolve bundle path: %w", err)
+	}
+	resultsRoot, err := filepath.Abs(filepath.Join(outDir, "bench-results"))
+	if err != nil {
+		return fmt.Errorf("resolve results root: %w", err)
+	}
+	workspaceRoot, err := filepath.Abs(filepath.Join(outDir, "bench-workspace"))
+	if err != nil {
+		return fmt.Errorf("resolve workspace root: %w", err)
+	}
 	cmd := exec.CommandContext(ctx, "go", "run", "./cmd/bench",
-		"-bundle", bundle, "-case-id", caseID,
-		"-results-root", filepath.Join(outDir, "bench-results"),
-		"-workspace-root", filepath.Join(outDir, "bench-workspace"))
+		"-bundle", absBundle, "-case-id", caseID,
+		"-results-root", resultsRoot,
+		"-workspace-root", workspaceRoot)
 	cmd.Dir = benchRepo
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -171,7 +194,7 @@ func runBench(ctx context.Context, benchRepo, bundle, caseID, outDir string) err
 	// A run can fail well past boundary validation (no fixture scenario, no adapter,
 	// no credentials). Only a boundary rejection disqualifies a case here, so the
 	// validator's own report is what gets consulted, not the process exit code.
-	if report, rerr := findValidationReport(filepath.Join(outDir, "bench-results"), caseID); rerr == nil {
+	if report, rerr := findValidationReport(resultsRoot, caseID); rerr == nil {
 		if report.Result == "pass" {
 			return nil
 		}

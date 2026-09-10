@@ -174,7 +174,9 @@ func buildRepo(t *testing.T, withSymlink bool) (dir, base, head string) {
 		t.Fatal(err)
 	}
 	if withSymlink {
-		if err := os.Symlink("fsm.c", filepath.Join(dir, "bgpd", "alias.c")); err != nil {
+		// Escapes the tree, so it stays inadmissible after the 2026-09-10 rule change
+		// that admits in-tree relative links.
+		if err := os.Symlink("../../outside.c", filepath.Join(dir, "bgpd", "alias.c")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -230,9 +232,9 @@ func TestProbeBlocksCasesThatCannotExport(t *testing.T) {
 		dir, base, head string
 		wantFragment    string
 	}{
-		"symlink in the head tree": {symlinkDir, symBase, symHead, "symlink"},
-		"missing commit":           {cleanDir, cleanBase, strings.Repeat("b", 40), "merge-base"},
-		"no identity in record":    {cleanDir, "", "", "base_sha"},
+		"inadmissible symlink in the head tree": {symlinkDir, symBase, symHead, "symlink"},
+		"missing commit":                        {cleanDir, cleanBase, strings.Repeat("b", 40), "merge-base"},
+		"no identity in record":                 {cleanDir, "", "", "base_sha"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

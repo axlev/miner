@@ -69,9 +69,18 @@ var evaluatorArtifactBasenames = map[string]bool{
 }
 
 // reviewerFiles returns every regular file under <bundleRoot>/reviewer, as
-// bundle-root-relative slash paths, sorted. Irregular entries are reported rather
-// than digested: the exporter cannot have produced one, so encountering one means
-// something outside this package wrote into the tree.
+// bundle-root-relative slash paths, sorted.
+//
+// Symlinks are skipped, not digested and not reported. The engine's checksum check
+// builds its own file set the same way — non-regular entries are excluded — so a
+// symlink appearing in control/checksums.sha256 would be read as "listed but absent"
+// and fail the bundle. Admissibility of the links themselves is a separate rule the
+// engine applies directly; the exporter only ever emits ones that satisfy it
+// (gitx.ListTree).
+//
+// Any other irregular type is reported: the exporter cannot produce a socket, device
+// node or FIFO, so encountering one means something outside this package wrote into
+// the tree.
 func reviewerFiles(bundleRoot string) ([]string, error) {
 	reviewerRoot := filepath.Join(bundleRoot, ReviewerDir)
 	var files []string
@@ -92,6 +101,9 @@ func reviewerFiles(bundleRoot string) ([]string, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 		if !info.Mode().IsRegular() {
 			irregular = append(irregular, fmt.Sprintf("%s (%s)", rel, info.Mode().Type()))
 			return nil

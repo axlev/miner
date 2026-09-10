@@ -68,13 +68,29 @@ func TestChecksumsCoverExactlyTheReviewerTree(t *testing.T) {
 	}
 }
 
-func TestReviewerFilesRejectsIrregularEntries(t *testing.T) {
+// TestReviewerFilesSkipsSymlinks pins the agreement with the engine's checksum check,
+// which builds its own file set from regular files only. A symlink listed in
+// control/checksums.sha256 would be read as "listed but absent" and fail the bundle.
+func TestReviewerFilesSkipsSymlinks(t *testing.T) {
 	root := buildBundle(t)
+	before, err := reviewerFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink("base.txt", bundlePath(root, "reviewer/repository/link.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reviewerFiles(root); err == nil {
-		t.Fatal("an irregular entry in the reviewer tree was digested rather than reported")
+	after, err := reviewerFiles(root)
+	if err != nil {
+		t.Fatalf("a symlink in the reviewer tree was reported as irregular: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("symlink changed the checksummed file set: %d -> %d", len(before), len(after))
+	}
+	for _, rel := range after {
+		if strings.HasSuffix(rel, "link.txt") {
+			t.Fatalf("symlink %s was included in the checksummed set", rel)
+		}
 	}
 }
 

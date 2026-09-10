@@ -524,13 +524,90 @@ func retargetFixture(t *testing.T, fx fixtureSet, head string) {
 	}
 }
 
+// TestExportPublishesAdmissibleSymlinks covers the boundary engine-runner moved on
+// 2026-09-10: an in-tree relative link is admissible and must survive into the bundle
+// as a link, not be dereferenced. Dereferencing would put identical content at two
+// paths, and a diff touching the target would then no longer reproduce the snapshot.
+func TestExportPublishesAdmissibleSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	fx := writeFixture(t, dir)
+	if err := os.MkdirAll(filepath.Join(fx.repoDir, "shared"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fx.repoDir, "shared", "conf"), []byte("shared config\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A link to a file, and a link to a directory: both shapes FRR actually uses.
+	if err := os.Symlink("../shared/conf", filepath.Join(fx.repoDir, "pkg", "conf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("shared", filepath.Join(fx.repoDir, "shared-alias")); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, fx.repoDir, "add", "-A")
+	runGit(t, fx.repoDir, "commit", "-q", "-m", "add shared config and links")
+	retargetFixture(t, fx, runGit(t, fx.repoDir, "rev-parse", "HEAD"))
+
+	out := filepath.Join(dir, "bundle")
+	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: out, EvaluatorOut: filepath.Join(dir, "evaluator")}
+	if err := Export(context.Background(), opt); err != nil {
+		t.Fatalf("an admissible in-tree symlink blocked the export: %v", err)
+	}
+
+	for _, rel := range []string{"reviewer/repository/pkg/conf", "reviewer/repository/shared-alias"} {
+		info, err := os.Lstat(bundlePath(out, rel))
+		if err != nil {
+			t.Fatalf("%s missing from the snapshot: %v", rel, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s was dereferenced into a regular file; the link relationship was lost", rel)
+		}
+	}
+
+	// The link must not appear in the checksum manifest: the engine builds its file
+	// set from regular files only, so a listed link reads as "listed but absent".
+	sums, err := os.ReadFile(bundlePath(out, "control/checksums.sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"reviewer/repository/pkg/conf", "reviewer/repository/shared-alias"} {
+		if strings.Contains(string(sums), rel) {
+			t.Fatalf("%s was listed in control/checksums.sha256", rel)
+		}
+	}
+	if !strings.Contains(string(sums), "reviewer/repository/shared/conf") {
+		t.Fatal("the link's target is missing from the checksum manifest")
+	}
+}
+
 func TestExportRejectsUnmaterializableTreeEntries(t *testing.T) {
 	cases := map[string]func(t *testing.T, dir string){
-		"symlink": func(t *testing.T, dir string) {
-			if err := os.Symlink("base.txt", filepath.Join(dir, "link.txt")); err != nil {
+		"symlink escaping the tree": func(t *testing.T, dir string) {
+			if err := os.Symlink("../outside.txt", filepath.Join(dir, "escape.txt")); err != nil {
 				t.Fatal(err)
 			}
-			runGit(t, dir, "add", "link.txt")
+			runGit(t, dir, "add", "escape.txt")
+		},
+		"absolute symlink": func(t *testing.T, dir string) {
+			if err := os.Symlink("/etc/passwd", filepath.Join(dir, "abs.txt")); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, dir, "add", "abs.txt")
+		},
+		"dangling symlink": func(t *testing.T, dir string) {
+			if err := os.Symlink("nonexistent.txt", filepath.Join(dir, "dangling.txt")); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, dir, "add", "dangling.txt")
+		},
+		"symlink chain": func(t *testing.T, dir string) {
+			if err := os.Symlink("base.txt", filepath.Join(dir, "first.txt")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("first.txt", filepath.Join(dir, "second.txt")); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, dir, "add", "first.txt", "second.txt")
 		},
 		"git metadata name": func(t *testing.T, dir string) {
 			if err := os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/master\n"), 0644); err != nil {

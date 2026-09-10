@@ -143,7 +143,8 @@ tables in two repositories, with no shared memory and no way to compare them —
 importing another module's `internal/` packages — meant a rule you tightened would leave
 the miner publishing bundles you reject, with nothing to detect the divergence.
 
-Your validator is now the single gate. `miner cohort-verify --bench-repo <engine-runner>`
+Your repo is now the single authority — at both of its gates, `boundaryvalidator` and
+`contextbuilder`. `miner cohort-verify --bench-repo <engine-runner>`
 runs `go run ./cmd/bench` over every bundle the miner builds, so fail-fast is preserved
 without a second implementation of your rules.
 
@@ -160,10 +161,15 @@ Two things on the miner side are deliberately not copies and remain:
   omits the `ground_truth` fragment on purpose, since ML repositories use the term
   legitimately — so that exact-filename case is the miner's to catch, and it does.
 
-Separately, the miner still refuses to *materialize* a tree it cannot represent as plain
-files (symlinks, submodule gitlinks). That is the exporter being unable to produce an
-artifact, not a policy mirror — and it is the subject of the open request in
-`docs/engine-request-in-tree-symlinks.md`.
+Separately, the miner still refuses to *materialize* a tree it cannot represent as a plain
+source snapshot — submodule gitlinks, unsupported modes, Git-metadata names, and symlinks
+that are not provably confined to the tree. That is the exporter being unable to produce
+an artifact, not a policy mirror.
+
+**Resolved 2026-09-10:** you accepted in-tree relative symlinks, and the miner now emits
+them as links rather than dereferencing. FRR went from 0 to 1,667 of 1,667 exportable, and
+three real cases have passed your validator end to end. Links are excluded from
+`control/checksums.sha256`, matching how your checksum check builds its file set.
 
 ## Three things worth knowing
 

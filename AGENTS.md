@@ -65,8 +65,14 @@ notes as a substitute for reading the docs — they drift. Update `docs/export-c
   contract says that list is meant to be tuned against real exports, tuning it changes no
   bundle's structure, and it is warnings-only here — so it may move on either side without
   being treated as a break.
-- **`engine-runner`'s boundary validator is the single authority on admissibility, and
-  this repo keeps no copy of its rules.** A mirror existed until 2026-09-10 and was
+- **`engine-runner` is the single authority on admissibility, and this repo keeps no copy
+  of its rules.** It enforces containment at *two* independent points, not one:
+  `internal/boundaryvalidator` decides whether a bundle may run at all, and
+  `internal/contextbuilder` decides what is placed inside a stage container. Relaxing only
+  the first would move a failure from "rejected cleanly before any spend" to "fails after a
+  container started and money was spent". This is why verification must run the full
+  `bench` (`cohort-verify --bench-repo`) rather than the validator alone — a
+  validator-only check would miss the second gate entirely. A mirror existed until 2026-09-10 and was
   deleted: two hand-maintained rule tables in two repos with no shared memory and no way
   to compare them (Go forbids importing another module's `internal/` packages) meant a
   rule tightened upstream would leave the miner publishing bundles the engine rejects,
@@ -205,6 +211,19 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-10: `engine-runner` accepted the request to admit in-tree relative symlinks
+  (`checkSnapshotSymlink` in its `boundaryvalidator`), making FRR exportable: 1,667 of
+  1,667 candidates, up from 0. It went further than asked on two points — the relaxation
+  is the default rather than an opt-in protocol flag, and symlink chains are rejected
+  outright instead of followed to a depth limit ("a rule with no traversal loop has no
+  traversal bug"). `gitx.ListTree` now mirrors that boundary in *behavior*, deciding what
+  the exporter may emit, and `MaterializeTree` writes links as links. Dereferencing was
+  rejected: it puts identical content at two paths, so a diff touching a symlink target
+  no longer reproduces the snapshot — 55 of 1,667 FRR candidates.
+- 2026-09-10: Symlinks are excluded from `control/checksums.sha256`. The engine builds
+  its comparison set from regular files only, so a listed link reads as "listed but
+  absent" and fails the bundle. Verified against a real FRR bundle: 7,361 regular files,
+  7,363 checksum lines (those plus `diff.patch` and `metadata.json`), 77 links unlisted.
 - 2026-09-10: Deleted the miner's copy of `engine-runner`'s boundary rules
   (`validateBundle` and its rule tables in `internal/prospectiveexport/bundle.go`), making
   the engine's validator the single gate. The mirror had been added the previous day to
