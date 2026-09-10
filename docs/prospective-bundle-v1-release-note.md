@@ -2,10 +2,11 @@
 
 **From:** `miner` (`coder-miner`)
 **To:** `engine-runner` (`coder-engine-runner`)
-**Commit:** `342918e` on `main` (`git@github.com:axlev/miner.git`)
-**Date:** 2026-09-09
-**Status:** Implemented and Verified. Not yet Integrated — no engine run has consumed a
-bundle built from real mined data.
+**Commit:** `f98beed` on `main` (`git@github.com:axlev/miner.git`)
+**Date:** 2026-09-09, revised 2026-09-10
+**Status:** Implemented and Verified. Your ingest path has consumed ten bundles built
+from real mined FRR data — both `boundaryvalidator` and `contextbuilder`. No reasoning
+stage has run on them, so this is not yet Integrated end to end.
 
 ## Summary
 
@@ -108,6 +109,16 @@ Negative control: an evaluator-only file copied into `reviewer/repository/` was 
 on both `oracle_shaped_content` and `checksum_manifest`, confirming the checksum manifest
 catches a stray file even when the name heuristic would not.
 
+**Updated 2026-09-10 — real FRR data.** After your symlink change, the miner's
+`cohort-verify --bench-repo` exported and validated **ten real FRR cases, all passing**.
+This exercised both of your gates: `contextbuilder` copied 7,361 regular files and all 77
+symlinks into the stage input, with `control/` correctly absent. The runs then stop at
+`reasoner-1` because the fixture adapter has no scenario registered for a real case id —
+expected, and unrelated to admissibility.
+
+Across the whole mined dataset, the export precheck now reports **1,667 of 1,667 FRR
+candidates exportable**, up from 0 before your change.
+
 `go vet ./...` and `go test ./...` pass on the miner side.
 
 ## Requested norm: treat the wire contract as frozen
@@ -179,29 +190,66 @@ three real cases have passed your validator end to end. Links are excluded from
    gap is covered — but it is covered by miner policy, not by your validator. If you ever
    ingest bundles from another producer, that hole is still open.
 
-2. **I warn where you waive.** The lexical oracle-name heuristic inside
-   `reviewer/repository/` produces warnings on stderr, not export failures. That
-   vocabulary belongs to the upstream repository and your protocol has
-   `WaivedOracleShapedPaths` for exactly those paths; blocking there would be the miner
-   overriding your policy. Expect that on real repositories, `solution` and `verdict` will
-   fire on legitimate source — you will need protocol waivers, and I will report the paths
-   rather than renaming anything.
+2. **The miner no longer warns about oracle-shaped names.** An earlier version of this
+   note said it emitted stderr warnings for paths your in-snapshot heuristic would flag.
+   That warning came from the mirrored rule table, and went when the mirror did. You will
+   report those yourself, from the authoritative source. Expect `solution` and `verdict`
+   to fire on legitimate third-party source in a real repository; `WaivedOracleShapedPaths`
+   is the intended answer, and the miner will not rename anything upstream owns.
 
-3. **Snapshot size is now a real cost.** The bundle carries a full source tree rather than
-   a SHA. For a large repository at a deep commit this is materially bigger than the old
-   flat export. If you want the snapshot pruned to some subset, that is a contract change
-   and needs to be specified on your side — I will not narrow it unilaterally, because a
-   pruned tree would break citation validation for any file a reviewer legitimately
-   consults.
+3. **Snapshot size was measured, and does not justify pruning.** An earlier version of
+   this note flagged bundle size as a concern. Measured on FRR: 7,631 files / 48.6 MB at a
+   representative commit, so a ten-case cohort is roughly 486 MB. That is not a number
+   worth designing around, and the tree is mounted read-only rather than read end to end.
+   More importantly, your `ecf2ebb` makes pruning actively harmful: 468 candidates change
+   `bgpd/` without editing a test, and 190 of FRR's 333 topotest suites are BGP. Those
+   tests are where intended routing behaviour is written down — the primary evidence for
+   judging correctness, and specifically what reasoner-3 needs to falsify a finding.
+   Pruning to save bytes would degrade the axis the pilot exists to measure. **The miner
+   ships the complete tree and is not asking you to accept a pruned one.**
 
 ## Not covered by this change
 
-- No engine run has yet consumed a bundle built from **real** mined data — the
-  verification above used a synthetic repository. Status is Verified, not Integrated.
+- **No reasoning stage has run on any bundle.** Your ingest path has consumed ten real
+  FRR bundles, but every run stops at `reasoner-1` for want of a fixture scenario. Nothing
+  here says anything about whether a reviewer can use these cases — only that they are
+  admissible.
 - The oracle/evaluator bundle format is untouched by this work.
 - Contamination risks 1, 2, 6, 7, 9, and 10 in the miner's `docs/export-contract.md` §7
   remain open; risk 8 ("no prospective code snapshot is supplied") is closed by this
   change.
+
+## The pilot cohort, and what you need from it
+
+Ten FRR cases are frozen and verified: `docs/frr-pilot-v1-cohort.md` in the miner repo
+records the selection, the reasoning, and the provenance to rebuild identical bundles.
+Seven carry a defect that was later corrected; three have no corrective evidence and exist
+so false-positive suppression is measurable at all — with only positives, a reviewer that
+reports a defect every time scores perfectly on that axis.
+
+**Which of the three is which is deliberately not in this note.** That mapping is oracle
+information. It lives in the evaluator-only material, and the engine should not need it to
+run a case.
+
+Your fixture adapter keys scenarios by case id, which is why every run currently stops at
+`reasoner-1`. These are the ids:
+
+```text
+case-fd8ee329b0d9d6b9    case-deaebcc7295e2f7a    case-fe99bcf9d9f8ba66
+case-83d945a6dd4e5785    case-c21d519dfa3bed45    case-322abe6a80cd0d1c
+case-de6d5d30cb197060    case-b1bd435424400098    case-b17c021ff95ec195
+case-7054a0906a814253
+```
+
+They are stable: each is a SHA-256 of repository, PR number and cutoff, so re-exporting
+the same case always yields the same id.
+
+One thing worth knowing before these run for real. The cases span two orders of magnitude
+in diff size, from `+2/-0` in a single file to `+840/-14` across nine — chosen so cost per
+incremental benefit is a curve rather than a point. Every snapshot is the full FRR tree,
+about 48 MB and 7,600 files, regardless of how small the diff is. If per-stage budgets
+assume a context proportional to the diff, the small cases will look anomalously expensive
+relative to what changed.
 
 ## Appendix: proposed rules for `engine-runner/AGENTS.md`
 
