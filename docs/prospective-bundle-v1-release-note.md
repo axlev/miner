@@ -135,40 +135,35 @@ no bundle's structure, it is waivable by protocol on your side, and it is warnin
 on the miner's side, so it can move freely without breaking anything. Tune it and say so;
 the miner will follow when convenient rather than treating it as a break.
 
-## The mirror, and how it breaks
+## The miner keeps no copy of your rules
 
-`miner`'s exporter runs its own pre-publication check (`validateBundle`,
-`internal/prospectiveexport/bundle.go`) that **duplicates the rules in
-`engine-runner/internal/boundaryvalidator`**. It exists so a bad bundle fails at export
-time instead of downstream. It is a convenience, not an authority: the engine's
-validator is the only verdict that counts, and its `boundary-validation.json` is the
-artifact of record.
+The miner briefly mirrored `internal/boundaryvalidator` so a bad bundle would fail at
+export rather than at ingest. **That copy has been deleted.** Two hand-maintained rule
+tables in two repositories, with no shared memory and no way to compare them — Go forbids
+importing another module's `internal/` packages — meant a rule you tightened would leave
+the miner publishing bundles you reject, with nothing to detect the divergence.
 
-That duplication has no automatic consistency check, and it cannot have one. Go forbids
-importing another module's `internal/` packages across a module boundary, so `miner`
-(module `miner`) cannot link `engine-runner`'s validator (module
-`github.com/axlev/engine-runner`) even in a test. Verification has to shell out to
-`cmd/bench`.
+Your validator is now the single gate. `miner cohort-verify --bench-repo <engine-runner>`
+runs `go run ./cmd/bench` over every bundle the miner builds, so fail-fast is preserved
+without a second implementation of your rules.
 
-So the failure mode is silent and one-directional: **if a rule in `boundaryvalidator`
-is tightened, added, or renamed, the miner's mirror keeps passing bundles the engine will
-reject.** Nothing detects it. There is no shared memory between the two coding roles —
-by design, per `system-design.md` §14 — so no session is notified, and a future session
-of either role starts with no recollection of this pairing existing.
+What this means for you: **a rule you change takes effect immediately and needs no
+matching edit anywhere else.** Please still say when you change one, so the miner knows
+what its bundles are being judged against — but nothing will silently diverge.
 
-The only durable channel is source control. Both repositories' `AGENTS.md` should
-therefore carry the standing rule, and this note records it too:
+Two things on the miner side are deliberately not copies and remain:
 
-> Changing the boundary rules on one side without the other silently breaks the pairing.
-> `engine-runner/internal/boundaryvalidator` is authoritative; `miner`'s `validateBundle`
-> mirrors it. A change to either must be mirrored in the same change, and a bundle must
-> be re-verified against `cmd/bench` afterwards.
+- `buildChecksums` produces `control/checksums.sha256`. That is an artifact you verify;
+  generating it correctly is the miner's job.
+- `checkEvaluatorArtifactNames` blocks exact evaluator-artifact filenames
+  (`oracle.json`, `ground_truth.json`, …) inside the snapshot. Your in-snapshot heuristic
+  omits the `ground_truth` fragment on purpose, since ML repositories use the term
+  legitimately — so that exact-filename case is the miner's to catch, and it does.
 
-Concretely, when `boundaryvalidator` changes: update `validateBundle` and the constants
-beside it (`reviewerAllowedEntries`, `gitMetadataNames`, `oracleShapedSubstrings`,
-`snapshotOracleBasenames`, `snapshotOracleSubstrings`, the pinned schema-version
-constants in `internal/prospectiveexport/export.go`), then re-run the verification in
-"Verification performed" above.
+Separately, the miner still refuses to *materialize* a tree it cannot represent as plain
+files (symlinks, submodule gitlinks). That is the exporter being unable to produce an
+artifact, not a policy mirror — and it is the subject of the open request in
+`docs/engine-request-in-tree-symlinks.md`.
 
 ## Three things worth knowing
 
@@ -220,16 +215,15 @@ ready to paste; the paths are local to that repo.
   say so explicitly in your report: a silently redefined `v1` is worse than a loudly
   introduced `v2`. This binds the engine as much as the miner.
 
-- **The miner hand-maintains a copy of your boundary rules, and nothing detects drift.**
-  `miner/internal/prospectiveexport/bundle.go` duplicates the structural rules in
-  `internal/boundaryvalidator` so a bad bundle fails at export time rather than at ingest.
-  Go forbids importing another module's `internal/` packages, so neither side can import
-  the other and no test can compare them. If you tighten, add, or rename a rule in
-  `boundaryvalidator`, the miner keeps publishing bundles you will reject — silently, until
-  someone updates it by hand. There is no shared memory between `coder-miner` and
-  `coder-engine-runner` (`docs/system-design.md` §14), so no session is notified
-  automatically. When you change a boundary rule, state it prominently enough that it can
-  be carried to the miner by hand.
+- **You are the single authority on admissibility; the miner keeps no copy of your
+  rules.** It briefly mirrored `internal/boundaryvalidator` and that copy has been
+  deleted — two hand-maintained rule tables in two repos with no shared memory, and no way
+  to compare them since Go forbids importing another module's `internal/` packages. A rule
+  you change therefore takes effect with no matching edit needed anywhere else, and
+  nothing can silently diverge. Still state plainly when you change a boundary rule, so
+  the miner knows what its bundles are judged against. The miner verifies against your
+  real validator via `cohort-verify --bench-repo`, so assume your rules are exercised on
+  actual artifacts rather than approximated.
 
 - **The oracle-name heuristics are exempt from the freeze.** `oracleShapedSubstrings`,
   `oracleArtifactBasenames`, and `highSignalOracleSubstrings` are meant to be tuned against

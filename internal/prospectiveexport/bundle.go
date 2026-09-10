@@ -32,38 +32,35 @@ const (
 	ChecksumsFile = "checksums.sha256"
 )
 
-var reviewerAllowedEntries = map[string]bool{SnapshotDir: true, DiffFile: true, MetadataFile: true}
-
-var controlAllowedEntries = map[string]bool{ControlManifestFile: true, ChecksumsFile: true}
-
-// gitMetadataNames mirrors the consumer's no_git_metadata rule. gitx.ListTree
-// already refuses to materialize these, so reaching one here means a file entered
-// the bundle from somewhere other than the object database.
-var gitMetadataNames = map[string]bool{
-	".git": true, ".gitmodules": true, "packed-refs": true, "HEAD": true,
-	"ORIG_HEAD": true, "FETCH_HEAD": true, "MERGE_HEAD": true, "shallow": true,
-	"objects": true, "refs": true, "reflogs": true, "worktrees": true, "alternates": true,
-}
-
-// oracleShapedSubstrings is the consumer's blunt heuristic, applied here to
-// miner-authored surfaces only: the entries directly under reviewer/. On those
-// paths the miner controls every name, so a match is a defect, not a coincidence.
-var oracleShapedSubstrings = []string{
-	"oracle", "ground_truth", "groundtruth", "expected_finding", "expected-finding",
-	"answer_key", "answerkey", "solution", "postmortem", "post_mortem",
-	"regression_report", "fix_commit", "final_state", "review_comments", "ci_result", "verdict",
-}
-
-// snapshotOracleBasenames are exact filenames an evaluator-only bundle's own
-// artifacts carry. Unlike the substring list they stay high-signal inside
-// third-party source, where "oracle" means Oracle Database and "solution" means a
-// .sln file.
+// This file deliberately contains no copy of engine-runner's boundary rules.
 //
-// ground_truth.json is listed here deliberately: the consumer excludes
-// "ground_truth" from the fragments it matches inside a snapshot, because ML
-// repositories use the term legitimately, which leaves this exact-filename case to
-// the miner.
-var snapshotOracleBasenames = map[string]bool{
+// It used to. The miner mirrored `engine-runner/internal/boundaryvalidator` so a bad
+// bundle would fail at export rather than at ingest. That mirror was a liability: two
+// hand-maintained rule tables in two repositories with no shared memory and no way to
+// compare them, because Go forbids importing another module's internal/ packages. A
+// rule tightened on the engine side would leave the miner cheerfully publishing bundles
+// the engine rejects, with nothing to detect the divergence.
+//
+// The engine's validator is now the single gate, exercised on real artifacts by
+// `miner cohort-verify --bench-repo`, which runs `go run ./cmd/bench` against every
+// bundle it builds. Admissibility is decided in exactly one place.
+//
+// What remains here is not validation of the engine's rules. It is the miner's own
+// production correctness (writing the checksum manifest) and the one contamination
+// check the engine explicitly delegates (see evaluatorArtifactBasenames).
+
+// evaluatorArtifactBasenames are exact filenames an evaluator-only bundle's own
+// artifacts carry. Finding one inside a source snapshot means oracle material leaked
+// into reviewer-visible space.
+//
+// This is NOT a copy of an engine rule; it is a gap the engine deliberately leaves to
+// the miner. The engine's in-snapshot heuristic intentionally omits the `ground_truth`
+// fragment, because ML repositories use the term legitimately and a check that fires
+// constantly on clean input gets switched off. That reasoning is sound for a substring
+// match over third-party source, and it means nothing downstream will catch a literal
+// `ground_truth.json` written into a snapshot. Exact basenames stay high-signal where
+// substrings do not, so the miner blocks these itself.
+var evaluatorArtifactBasenames = map[string]bool{
 	"oracle.json": true, "oracle.yaml": true, "oracle.yml": true,
 	"ground_truth.json": true, "groundtruth.json": true,
 	"answer_key.json": true, "answerkey.json": true,
@@ -71,13 +68,10 @@ var snapshotOracleBasenames = map[string]bool{
 	"retrospective.json": true,
 }
 
-// snapshotOracleSubstrings are the fragments specific enough to this benchmark's
-// vocabulary to be worth matching even inside third-party source.
-var snapshotOracleSubstrings = []string{"expected_finding", "expected-finding", "answer_key", "answerkey", "fix_commit"}
-
 // reviewerFiles returns every regular file under <bundleRoot>/reviewer, as
 // bundle-root-relative slash paths, sorted. Irregular entries are reported rather
-// than digested: they are inadmissible, and hashing them would only mask that.
+// than digested: the exporter cannot have produced one, so encountering one means
+// something outside this package wrote into the tree.
 func reviewerFiles(bundleRoot string) ([]string, error) {
 	reviewerRoot := filepath.Join(bundleRoot, ReviewerDir)
 	var files []string
@@ -117,7 +111,8 @@ func reviewerFiles(bundleRoot string) ([]string, error) {
 }
 
 // buildChecksums renders control/checksums.sha256: one sha256sum-format line per
-// regular file under reviewer/, with paths relative to the bundle root.
+// regular file under reviewer/, with paths relative to the bundle root. The engine
+// requires this file to describe exactly that set, in both directions.
 func buildChecksums(bundleRoot string) ([]byte, error) {
 	files, err := reviewerFiles(bundleRoot)
 	if err != nil {
@@ -140,122 +135,23 @@ func buildChecksums(bundleRoot string) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
-// validateBundle re-derives the consumer's admissibility rules against the fully
-// built bundle, before it is published. It is deliberately a second, independent
-// pass over the bytes on disk rather than an assertion about the values that were
-// used to write them.
-//
-// Errors are the rules a consumer cannot waive: layout, irregular files, Git
-// metadata, pinned schema versions, and checksum agreement. Warnings are the
-// lexical oracle-name heuristic applied inside the source snapshot, whose
-// vocabulary this repository does not control — those are reported for a human to
-// judge, per the ingest contract's instruction to report false positives rather
-// than work around them.
-func validateBundle(bundleRoot string, metadata, controlManifest, checksums []byte) ([]string, error) {
-	top, err := os.ReadDir(bundleRoot)
-	if err != nil {
-		return nil, err
-	}
-	seenTop := map[string]bool{}
-	for _, e := range top {
-		if !e.IsDir() || (e.Name() != ReviewerDir && e.Name() != ControlDir) {
-			return nil, fmt.Errorf("unexpected bundle entry %q; the root holds exactly %s/ and %s/", e.Name(), ReviewerDir, ControlDir)
-		}
-		seenTop[e.Name()] = true
-	}
-	if !seenTop[ReviewerDir] || !seenTop[ControlDir] {
-		return nil, fmt.Errorf("bundle root is missing %s/ or %s/", ReviewerDir, ControlDir)
-	}
-
-	reviewerEntries, err := os.ReadDir(filepath.Join(bundleRoot, ReviewerDir))
-	if err != nil {
-		return nil, err
-	}
-	if len(reviewerEntries) != len(reviewerAllowedEntries) {
-		return nil, fmt.Errorf("%s/ has %d entries, expected exactly %d", ReviewerDir, len(reviewerEntries), len(reviewerAllowedEntries))
-	}
-	for _, e := range reviewerEntries {
-		if !reviewerAllowedEntries[e.Name()] {
-			return nil, fmt.Errorf("unexpected reviewer-visible entry %q", e.Name())
-		}
-		if (e.Name() == SnapshotDir) != e.IsDir() {
-			return nil, fmt.Errorf("reviewer entry %q has the wrong type", e.Name())
-		}
-	}
-	controlEntries, err := os.ReadDir(filepath.Join(bundleRoot, ControlDir))
-	if err != nil {
-		return nil, err
-	}
-	if len(controlEntries) != len(controlAllowedEntries) {
-		return nil, fmt.Errorf("%s/ has %d entries, expected exactly %d", ControlDir, len(controlEntries), len(controlAllowedEntries))
-	}
-	for _, e := range controlEntries {
-		if e.IsDir() || !controlAllowedEntries[e.Name()] {
-			return nil, fmt.Errorf("unexpected control entry %q", e.Name())
-		}
-	}
-
-	// Miner-authored surfaces: the three reviewer entries, whose names the miner
-	// chooses, are held to the full lexical heuristic.
-	for _, e := range reviewerEntries {
-		lower := strings.ToLower(ReviewerDir + "/" + e.Name())
-		for _, frag := range oracleShapedSubstrings {
-			if strings.Contains(lower, frag) {
-				return nil, fmt.Errorf("reviewer entry %q contains %q, which reads as retrospective or outcome material", e.Name(), frag)
-			}
-		}
-	}
-
+// checkEvaluatorArtifactNames fails the export when a snapshot file carries the exact
+// filename of an evaluator-only artifact. See evaluatorArtifactBasenames for why this
+// one check stays on the miner rather than being left to the engine.
+func checkEvaluatorArtifactNames(bundleRoot string) error {
 	files, err := reviewerFiles(bundleRoot)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	snapshotPrefix := ReviewerDir + "/" + SnapshotDir + "/"
-	var warnings []string
+	var found []string
 	for _, rel := range files {
-		for _, seg := range strings.Split(rel, "/") {
-			if gitMetadataNames[seg] {
-				return nil, fmt.Errorf("%s: path segment %q indicates Git history or worktree leakage", rel, seg)
-			}
-		}
-		if !strings.HasPrefix(rel, snapshotPrefix) {
-			continue
-		}
-		lower := strings.ToLower(rel)
-		if snapshotOracleBasenames[strings.ToLower(filepath.Base(rel))] {
-			return nil, fmt.Errorf("%s is the filename of an evaluator-only bundle artifact; a source snapshot must not contain one", rel)
-		}
-		for _, frag := range snapshotOracleSubstrings {
-			if strings.Contains(lower, frag) {
-				warnings = append(warnings, fmt.Sprintf("%s contains %q; the engine's oracle-name heuristic will flag it, and it needs either a protocol waiver or a report upstream", rel, frag))
-				break
-			}
+		if evaluatorArtifactBasenames[strings.ToLower(filepath.Base(rel))] {
+			found = append(found, rel)
 		}
 	}
-
-	// Checksum agreement, recomputed from disk in both directions.
-	recomputed, err := buildChecksums(bundleRoot)
-	if err != nil {
-		return nil, err
+	if len(found) > 0 {
+		sort.Strings(found)
+		return fmt.Errorf("evaluator-only artifact name(s) in reviewer-visible space: %s", strings.Join(found, ", "))
 	}
-	if string(recomputed) != string(checksums) {
-		return nil, fmt.Errorf("%s/%s does not describe exactly the regular files under %s/", ControlDir, ChecksumsFile, ReviewerDir)
-	}
-
-	// Pinned schema versions, read back from the published bytes.
-	onDiskMeta, err := os.ReadFile(filepath.Join(bundleRoot, ReviewerDir, MetadataFile))
-	if err != nil {
-		return nil, err
-	}
-	if string(onDiskMeta) != string(metadata) {
-		return nil, fmt.Errorf("%s/%s on disk differs from the validated metadata", ReviewerDir, MetadataFile)
-	}
-	onDiskManifest, err := os.ReadFile(filepath.Join(bundleRoot, ControlDir, ControlManifestFile))
-	if err != nil {
-		return nil, err
-	}
-	if string(onDiskManifest) != string(controlManifest) {
-		return nil, fmt.Errorf("%s/%s on disk differs from the validated manifest", ControlDir, ControlManifestFile)
-	}
-	return warnings, nil
+	return nil
 }

@@ -534,25 +534,27 @@ func crossCheckIdentity(bundle collector.RawPRBundle, pr int, repository, baseSH
 // are separate directories because the engine allow-list-copies only the three named
 // entries under reviewer/, so control/ cannot reach a reasoner even by accident.
 //
-// It returns any advisory warnings raised while validating the built bundle.
-func Export(ctx context.Context, opt Options) ([]string, error) {
+// Admissibility is decided by engine-runner's boundary validator, not here: the miner
+// no longer keeps a copy of those rules. Use `miner cohort-verify --bench-repo` to run
+// the real validator against a built bundle.
+func Export(ctx context.Context, opt Options) error {
 	if opt.PR <= 0 || opt.CorrelatedInput == "" || opt.CacheFile == "" || opt.Repo == "" || opt.ProspectiveOut == "" || opt.EvaluatorOut == "" {
-		return nil, fmt.Errorf("correlated input, cache file, repo, pr, cutoff, prospective-out, and evaluator-out are required")
+		return fmt.Errorf("correlated input, cache file, repo, pr, cutoff, prospective-out, and evaluator-out are required")
 	}
 	if opt.CaseID != "" && (strings.ContainsAny(opt.CaseID, "/\\") || opt.CaseID == "." || opt.CaseID == "..") {
-		return nil, fmt.Errorf("case-id must be a neutral path component")
+		return fmt.Errorf("case-id must be a neutral path component")
 	}
 	raw, root, err := findRecord(opt.CorrelatedInput, opt.PR)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	cacheRaw, err := os.ReadFile(opt.CacheFile)
 	if err != nil {
-		return nil, fmt.Errorf("read cache bundle: %w", err)
+		return fmt.Errorf("read cache bundle: %w", err)
 	}
 	var bundle collector.RawPRBundle
 	if err := json.Unmarshal(cacheRaw, &bundle); err != nil {
-		return nil, fmt.Errorf("parse cache bundle: %w", err)
+		return fmt.Errorf("parse cache bundle: %w", err)
 	}
 	var original struct {
 		Repository string `json:"repository"`
@@ -560,29 +562,29 @@ func Export(ctx context.Context, opt Options) ([]string, error) {
 		HeadSHA    string `json:"head_sha"`
 	}
 	if err := json.Unmarshal(root["original"], &original); err != nil {
-		return nil, err
+		return err
 	}
 	if err := crossCheckIdentity(bundle, opt.PR, original.Repository, original.BaseSHA, original.HeadSHA); err != nil {
-		return nil, fmt.Errorf("prospective identity validation failed: %w", err)
+		return fmt.Errorf("prospective identity validation failed: %w", err)
 	}
 
 	meta, decisions, err := Build(bundle, original.Repository, opt.Cutoff)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := validateDecisions(decisions, opt.Cutoff.UTC()); err != nil {
-		return nil, fmt.Errorf("prospective provenance validation failed: %w", err)
+		return fmt.Errorf("prospective provenance validation failed: %w", err)
 	}
 	if err := validateCommitMessages(meta, bundle, opt.Cutoff.UTC()); err != nil {
-		return nil, fmt.Errorf("prospective commit validation failed: %w", err)
+		return fmt.Errorf("prospective commit validation failed: %w", err)
 	}
 	normalized, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	normalized = append(normalized, '\n')
 	if err := ValidateNormalized(normalized, opt.Cutoff, forbiddenValues(root)); err != nil {
-		return nil, fmt.Errorf("prospective validation failed: %w", err)
+		return fmt.Errorf("prospective validation failed: %w", err)
 	}
 
 	// The diff and the snapshot are derived from the same two commit objects in the
@@ -595,7 +597,7 @@ func Export(ctx context.Context, opt Options) ([]string, error) {
 	repo := gitx.OpenRepository(opt.Repo)
 	patch, mergeBase, err := repo.CanonicalChangePatch(ctx, original.BaseSHA, original.HeadSHA)
 	if err != nil {
-		return nil, fmt.Errorf("resolve canonical change patch: %w", err)
+		return fmt.Errorf("resolve canonical change patch: %w", err)
 	}
 
 	caseID := opt.CaseID
@@ -613,100 +615,99 @@ func Export(ctx context.Context, opt Options) ([]string, error) {
 	}
 	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	manifestBytes = append(manifestBytes, '\n')
 	if err := ValidateControlManifest(manifestBytes, opt.Cutoff); err != nil {
-		return nil, fmt.Errorf("manifest validation failed: %w", err)
+		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
 	if _, err := os.Stat(opt.ProspectiveOut); err == nil {
-		return nil, fmt.Errorf("prospective output %q already exists; refusing to mix or overwrite case artifacts", opt.ProspectiveOut)
+		return fmt.Errorf("prospective output %q already exists; refusing to mix or overwrite case artifacts", opt.ProspectiveOut)
 	} else if !os.IsNotExist(err) {
-		return nil, err
+		return err
 	}
 	if _, err := os.Stat(opt.EvaluatorOut); err == nil {
-		return nil, fmt.Errorf("evaluator output %q already exists; refusing to mix or overwrite case artifacts", opt.EvaluatorOut)
+		return fmt.Errorf("evaluator output %q already exists; refusing to mix or overwrite case artifacts", opt.EvaluatorOut)
 	} else if !os.IsNotExist(err) {
-		return nil, err
+		return err
 	}
 
 	prospectiveParent := filepath.Dir(opt.ProspectiveOut)
 	if err := os.MkdirAll(prospectiveParent, 0755); err != nil {
-		return nil, err
+		return err
 	}
 	prospectiveTmp, err := os.MkdirTemp(prospectiveParent, ".prospective-export-")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer os.RemoveAll(prospectiveTmp)
 	// MkdirTemp creates 0700; the published bundle root is bind-mounted read-only
 	// into a stage container that does not run as this user, so it has to be
 	// traversable.
 	if err := os.Chmod(prospectiveTmp, 0755); err != nil {
-		return nil, err
+		return err
 	}
 	reviewerTmp := filepath.Join(prospectiveTmp, ReviewerDir)
 	controlTmp := filepath.Join(prospectiveTmp, ControlDir)
 	if err := os.MkdirAll(reviewerTmp, 0755); err != nil {
-		return nil, err
+		return err
 	}
 	if err := os.MkdirAll(controlTmp, 0755); err != nil {
-		return nil, err
+		return err
 	}
 	if _, err := repo.MaterializeTree(ctx, original.HeadSHA, filepath.Join(reviewerTmp, SnapshotDir)); err != nil {
-		return nil, fmt.Errorf("materialize source snapshot: %w", err)
+		return fmt.Errorf("materialize source snapshot: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(reviewerTmp, MetadataFile), normalized, 0644); err != nil {
-		return nil, err
+		return err
 	}
 	if err := os.WriteFile(filepath.Join(reviewerTmp, DiffFile), patch, 0644); err != nil {
-		return nil, err
+		return err
 	}
 	checksums, err := buildChecksums(prospectiveTmp)
 	if err != nil {
-		return nil, fmt.Errorf("build checksum manifest: %w", err)
+		return fmt.Errorf("build checksum manifest: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(controlTmp, ChecksumsFile), checksums, 0644); err != nil {
-		return nil, err
+		return err
 	}
 	if err := os.WriteFile(filepath.Join(controlTmp, ControlManifestFile), manifestBytes, 0644); err != nil {
-		return nil, err
+		return err
 	}
-	warnings, err := validateBundle(prospectiveTmp, normalized, manifestBytes, checksums)
-	if err != nil {
-		return nil, fmt.Errorf("prospective bundle validation failed: %w", err)
+	if err := checkEvaluatorArtifactNames(prospectiveTmp); err != nil {
+		return fmt.Errorf("prospective bundle rejected: %w", err)
 	}
 
 	evaluatorParent := filepath.Dir(opt.EvaluatorOut)
 	if err := os.MkdirAll(evaluatorParent, 0755); err != nil {
-		return nil, err
+		return err
 	}
 	evaluatorTmp, err := os.MkdirTemp(evaluatorParent, ".evaluator-export-")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer os.RemoveAll(evaluatorTmp)
 	if err := os.WriteFile(filepath.Join(evaluatorTmp, "correlated-report.json"), append(append([]byte(nil), raw...), '\n'), 0644); err != nil {
-		return nil, err
+		return err
 	}
 	audit := Audit{SchemaVersion: SchemaVersion, CaseID: caseID, PRNumber: opt.PR, Cutoff: opt.Cutoff.UTC().Format(time.RFC3339Nano), InputRecordSHA256: digest(raw), CacheBundleSHA256: digest(cacheRaw), Fields: decisions, Validation: "passed"}
 	ab, err := json.MarshalIndent(audit, "", "  ")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	ab = append(ab, '\n')
 	if err := os.WriteFile(filepath.Join(evaluatorTmp, "metadata-export-audit.json"), ab, 0644); err != nil {
-		return nil, err
+		return err
 	}
 
 	// Both roots are fully built and validated before either rename, bounding the
 	// partial-publication window to the two filesystem rename calls themselves.
 	if err := os.Rename(prospectiveTmp, opt.ProspectiveOut); err != nil {
-		return nil, err
+		return err
 	}
 	if err := os.Rename(evaluatorTmp, opt.EvaluatorOut); err != nil {
-		return nil, err
+		return err
 	}
-	return warnings, nil
+	return nil
 }

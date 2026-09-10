@@ -222,12 +222,8 @@ func TestExportSeparatesEvaluatorDataAndIsDeterministic(t *testing.T) {
 	evalOuts := []string{filepath.Join(dir, "evaluator-1"), filepath.Join(dir, "evaluator-2")}
 	for i := range prospOuts {
 		opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: prospOuts[i], EvaluatorOut: evalOuts[i]}
-		warnings, err := Export(context.Background(), opt)
-		if err != nil {
+		if err := Export(context.Background(), opt); err != nil {
 			t.Fatal(err)
-		}
-		if len(warnings) != 0 {
-			t.Fatalf("clean fixture raised warnings: %v", warnings)
 		}
 	}
 	a, _ := os.ReadFile(bundlePath(prospOuts[0], "reviewer/metadata.json"))
@@ -298,7 +294,7 @@ func TestExportProducesEngineIngestibleLayout(t *testing.T) {
 	fx := writeFixture(t, dir)
 	out := filepath.Join(dir, "bundle")
 	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: out, EvaluatorOut: filepath.Join(dir, "evaluator")}
-	if _, err := Export(context.Background(), opt); err != nil {
+	if err := Export(context.Background(), opt); err != nil {
 		t.Fatal(err)
 	}
 
@@ -336,7 +332,12 @@ func TestExportProducesEngineIngestibleLayout(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if gitMetadataNames[d.Name()] {
+		// Git metadata names, spelled out here rather than referenced from a shared
+		// table: this test asserts a property of the published bundle, and reusing a
+		// production constant would make it pass whenever that constant was emptied.
+		switch d.Name() {
+		case ".git", ".gitmodules", "packed-refs", "HEAD", "ORIG_HEAD", "FETCH_HEAD",
+			"MERGE_HEAD", "shallow", "objects", "refs", "reflogs", "worktrees", "alternates":
 			t.Fatalf("snapshot carries Git metadata at %s", path)
 		}
 		info, err := d.Info()
@@ -377,7 +378,7 @@ func TestChecksumsDescribeExactlyTheReviewerTree(t *testing.T) {
 	fx := writeFixture(t, dir)
 	out := filepath.Join(dir, "bundle")
 	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: out, EvaluatorOut: filepath.Join(dir, "evaluator")}
-	if _, err := Export(context.Background(), opt); err != nil {
+	if err := Export(context.Background(), opt); err != nil {
 		t.Fatal(err)
 	}
 
@@ -442,7 +443,7 @@ func TestSnapshotCorrespondsToDiff(t *testing.T) {
 	fx := writeFixture(t, dir)
 	out := filepath.Join(dir, "bundle")
 	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: out, EvaluatorOut: filepath.Join(dir, "evaluator")}
-	if _, err := Export(context.Background(), opt); err != nil {
+	if err := Export(context.Background(), opt); err != nil {
 		t.Fatal(err)
 	}
 	var manifest ControlManifest
@@ -505,6 +506,24 @@ func treeContents(t *testing.T, root string) map[string]string {
 // TestExportRejectsUnmaterializableTreeEntries covers the entries that cannot be
 // published as plain regular files. Skipping any of them would silently break the
 // correspondence TestSnapshotCorrespondsToDiff asserts, so the export fails closed.
+// retargetFixture re-points a fixture's correlated record and cache bundle at a new
+// head commit, so identity cross-checks still agree after the test repo gains a commit.
+func retargetFixture(t *testing.T, fx fixtureSet, head string) {
+	t.Helper()
+	record := strings.ReplaceAll(fx.record, fx.headSHA, head)
+	if err := os.WriteFile(fx.input, []byte(record+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var b collector.RawPRBundle
+	raw, _ := os.ReadFile(fx.cache)
+	_ = json.Unmarshal(raw, &b)
+	b.PR.Head.SHA = &head
+	raw, _ = json.Marshal(b)
+	if err := os.WriteFile(fx.cache, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExportRejectsUnmaterializableTreeEntries(t *testing.T) {
 	cases := map[string]func(t *testing.T, dir string){
 		"symlink": func(t *testing.T, dir string) {
@@ -528,23 +547,11 @@ func TestExportRejectsUnmaterializableTreeEntries(t *testing.T) {
 			runGit(t, fx.repoDir, "commit", "-q", "-m", "taint")
 			headSHA := runGit(t, fx.repoDir, "rev-parse", "HEAD")
 
-			// Re-point the record and cache at the tainted head so identity still agrees.
-			record := strings.ReplaceAll(fx.record, fx.headSHA, headSHA)
-			if err := os.WriteFile(fx.input, []byte(record+"\n"), 0644); err != nil {
-				t.Fatal(err)
-			}
-			var b collector.RawPRBundle
-			raw, _ := os.ReadFile(fx.cache)
-			_ = json.Unmarshal(raw, &b)
-			b.PR.Head.SHA = &headSHA
-			raw, _ = json.Marshal(b)
-			if err := os.WriteFile(fx.cache, raw, 0644); err != nil {
-				t.Fatal(err)
-			}
+			retargetFixture(t, fx, headSHA)
 
 			prospOut := filepath.Join(dir, "bundle")
 			opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: prospOut, EvaluatorOut: filepath.Join(dir, "evaluator")}
-			if _, err := Export(context.Background(), opt); err == nil {
+			if err := Export(context.Background(), opt); err == nil {
 				t.Fatalf("%s was materialized into the snapshot instead of failing the export", name)
 			}
 			if _, err := os.Stat(prospOut); !os.IsNotExist(err) {
@@ -569,7 +576,7 @@ func TestExportFailureWritesNoPartialCase(t *testing.T) {
 	prospOut := filepath.Join(dir, "prospective-3")
 	evalOut := filepath.Join(dir, "evaluator-3")
 	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: prospOut, EvaluatorOut: evalOut}
-	if _, err := Export(context.Background(), opt); err == nil {
+	if err := Export(context.Background(), opt); err == nil {
 		t.Fatal("expected forbidden-value failure")
 	}
 	if _, err := os.Stat(prospOut); !os.IsNotExist(err) {
@@ -611,7 +618,7 @@ func TestExportRejectsMismatchedCacheIdentity(t *testing.T) {
 			prospOut := filepath.Join(t.TempDir(), "prospective")
 			evalOut := filepath.Join(t.TempDir(), "evaluator")
 			opt := Options{CorrelatedInput: fx.input, CacheFile: cachePath, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: prospOut, EvaluatorOut: evalOut}
-			if _, err := Export(context.Background(), opt); err == nil {
+			if err := Export(context.Background(), opt); err == nil {
 				t.Fatalf("%s: expected identity validation failure", name)
 			}
 			if _, err := os.Stat(prospOut); !os.IsNotExist(err) {
@@ -631,7 +638,7 @@ func TestExportRejectsExistingOutputRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	opt := Options{CorrelatedInput: fx.input, CacheFile: fx.cache, Repo: fx.repoDir, PR: 42, Cutoff: cutoff, ProspectiveOut: prospOut, EvaluatorOut: evalOut}
-	if _, err := Export(context.Background(), opt); err == nil {
+	if err := Export(context.Background(), opt); err == nil {
 		t.Fatal("expected refusal when prospective-out already exists")
 	}
 	if _, err := os.Stat(evalOut); !os.IsNotExist(err) {

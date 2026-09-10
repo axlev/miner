@@ -216,18 +216,24 @@ information belongs in the manifest; the engine requires it in the metadata file
 so that a metadata file separated from its bundle is still self-identifying. It still
 never carries `base_commit`/`cutoff_commit`.
 
-Before publication the exporter re-derives the consumer's admissibility rules against
-the built bundle (`validateBundle`, `internal/prospectiveexport/bundle.go`) as a second
-pass over the bytes on disk, not an assertion about the values used to write them.
-Layout, irregular files, Git metadata, pinned schema versions, and checksum agreement
-are errors. The lexical oracle-name heuristic applied *inside* the source snapshot is a
-warning only: that vocabulary belongs to the upstream repository, and the engine's
-protocol carries a waiver for exactly those paths, so they are reported for a human to
-judge rather than renamed or dropped. Exact evaluator-artifact basenames
-(`oracle.json`, `ground_truth.json`, …) remain errors even inside the snapshot —
-`ground_truth` is deliberately excluded from the fragments the engine matches there,
-because ML repositories use the term legitimately, which leaves that exact-filename case
-to the miner.
+**Updated 2026-09-10:** the exporter keeps no copy of the engine's admissibility rules.
+A mirror (`validateBundle`) existed briefly and was deleted — two hand-maintained rule
+tables in two repositories, with no way to compare them because Go forbids importing
+another module's `internal/` packages, meant a rule tightened upstream would leave the
+miner publishing bundles the engine rejects with nothing to detect it. Admissibility is
+now decided in exactly one place, and `miner cohort-verify --bench-repo` runs that
+validator over every bundle it builds, so a bad bundle is still caught before a cohort is
+frozen.
+
+Two checks in `internal/prospectiveexport/bundle.go` are deliberately not copies and
+remain. `buildChecksums` produces `control/checksums.sha256`, an artifact the engine
+merely verifies — production, not validation. `checkEvaluatorArtifactNames` blocks exact
+evaluator-artifact filenames (`oracle.json`, `ground_truth.json`, …) inside the snapshot,
+because the engine's in-snapshot heuristic deliberately omits the `ground_truth` fragment
+(ML repositories use the term legitimately), leaving that exact-filename case to the
+miner. Separately, `gitx.ListTree` still refuses to materialize a tree it cannot
+represent as plain files; that is the exporter being unable to produce an artifact, not a
+policy mirror.
 
 Both output roots are fully built and validated in temporary directories before either
 is published; each root refuses to overwrite an existing destination, and a validation
@@ -581,7 +587,7 @@ migration then replaced, and are marked inline. Items 10-13 are that migration.
 4. **Implemented.** `findRecord` now collects every line matching the requested PR number and rejects the export if more than one match exists, instead of returning the first.
 5. **Implemented.** `GenerateCaseID` derives an opaque `case-<16 hex>` identifier from a SHA-256 of repository/PR/cutoff; `--case-id` is now optional and defaults to this.
 6. **Implemented.** `prospective-export` now takes `--prospective-out` and `--evaluator-out` as two independent, separately-atomic output roots instead of one shared root with two subdirectories.
-7. **Implemented, then superseded 2026-09-09.** `ValidateManifest` recomputed every artifact's SHA-256 and `validateProspectiveDirectory` enforced a filename allowlist on the flat directory. Both were replaced by `validateBundle` and `control/checksums.sha256` (items 11 and 13), which are exhaustive over the whole `reviewer/` tree rather than over a fixed list of three names. This remains native Go structural validation against the same shape documented in `schemas/*.json`, not a runtime JSON-Schema library evaluation — no new dependency was added.
+7. **Implemented, then superseded 2026-09-09.** `ValidateManifest` recomputed every artifact's SHA-256 and `validateProspectiveDirectory` enforced a filename allowlist on the flat directory. Both were replaced by `control/checksums.sha256`, which is exhaustive over the whole `reviewer/` tree rather than over a fixed list of three names. The short-lived `validateBundle` that also replaced them was itself removed on 2026-09-10 (item 14).
 8. **Implemented.** `internal/buildinfo.MinerVersion` records the actual build's Git revision (via Go's embedded VCS metadata) in `provenance.miner_version`, replacing the hard-coded `v1.0.0`.
 9. **Already implemented by design; not a code change this round.** `Build` (`internal/prospectiveexport/export.go`) only ever sets a `Metadata` field when its `FieldDecision.Included` is positively proven from cutoff-admissible provenance — a field is never included and *then* screened out by forbidden-value scanning. `ValidateNormalized`'s forbidden-string check runs strictly after and in addition to this, as defense in depth. `TestBuildOmitsAmbiguousEditedText` demonstrates this directly by asserting omission at the `Build` level, without invoking forbidden-value scanning at all.
 
@@ -589,9 +595,10 @@ migration then replaced, and are marked inline. Items 10-13 are that migration.
 Added 2026-09-09, for engine ingestibility:
 
 10. **Implemented.** `Repository.MaterializeTree`/`ListTree` (`internal/gitx/snapshot.go`) write the tree of `cutoff_commit` as a plain directory of regular files, reading blobs straight from the object database via a streamed `git cat-file --batch`. Symlinks, submodule gitlinks, and Git-metadata-named path segments fail the export rather than being skipped.
-11. **Implemented.** `control/checksums.sha256` replaces `manifest.json.artifacts`; `validateBundle` (`internal/prospectiveexport/bundle.go`) recomputes it from disk and requires exact agreement in both directions.
+11. **Implemented.** `control/checksums.sha256` replaces `manifest.json.artifacts`. The miner generates it (`buildChecksums`); the engine verifies it exhaustively in both directions.
 12. **Implemented.** `Metadata.SchemaVersion` pins `reviewer-metadata/v1` and `ValidateNormalized` rejects any other value; `ControlManifest` pins `engine-manifest/v1` and `ValidateControlManifest` replaces `ValidateManifest`.
-13. **Implemented.** `validateBundle` re-derives the engine's admissibility rules against the built bundle before publication, erroring on the unwaivable rules and warning on the lexical oracle-name heuristic inside the snapshot, whose vocabulary is upstream's.
+13. **Implemented, then removed 2026-09-10 (see item 14).** `validateBundle` re-derived the engine's admissibility rules against the built bundle before publication.
+14. **Implemented 2026-09-10.** The mirror from item 13 was deleted; `engine-runner`'s validator is the single authority, exercised over real bundles by `cohort-verify --bench-repo`. Retained: `buildChecksums` (production) and `checkEvaluatorArtifactNames` (a gap the engine delegates). `Export` no longer returns advisory warnings — the mirrored heuristic was their only source.
 
 ## Proposed miner-engine interface
 

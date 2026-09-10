@@ -28,7 +28,6 @@ type CaseResult struct {
 	Validated     bool
 	ValidationRun bool
 	BundlePath    string
-	Warnings      []string
 	Err           string
 	// BenchCommand is the exact invocation that validates this bundle, always
 	// populated so it can be run by hand when the engine checkout is not wired in.
@@ -114,7 +113,7 @@ func Verify(ctx context.Context, opt VerifyOptions) ([]CaseResult, error) {
 		res.BundlePath = bundle
 		res.BenchCommand = fmt.Sprintf("go run ./cmd/bench -bundle %s -case-id %s", bundle, res.CaseID)
 
-		warnings, err := prospectiveexport.Export(ctx, prospectiveexport.Options{
+		err := prospectiveexport.Export(ctx, prospectiveexport.Options{
 			CorrelatedInput: inputPath,
 			CacheFile:       cachePath(opt.CacheDir, rec.Original.Repository, pr),
 			Repo:            opt.Repo,
@@ -123,7 +122,6 @@ func Verify(ctx context.Context, opt VerifyOptions) ([]CaseResult, error) {
 			ProspectiveOut:  bundle,
 			EvaluatorOut:    filepath.Join(opt.OutDir, res.CaseID+"-evaluator-only"),
 		})
-		res.Warnings = warnings
 		if err != nil {
 			res.Err = firstLine(err.Error())
 			results = append(results, res)
@@ -269,34 +267,12 @@ func RenderVerification(results []CaseResult, validationRun bool) string {
 			validated = "**FAIL**"
 		}
 		notes := r.Err
-		if notes == "" && len(r.Warnings) > 0 {
-			notes = fmt.Sprintf("%d warning(s): %s", len(r.Warnings), truncate(r.Warnings[0], 80))
-		}
 		cutoff := ""
 		if !r.Cutoff.IsZero() {
 			cutoff = r.Cutoff.Format(time.RFC3339)
 		}
 		fmt.Fprintf(&sb, "| %d | `%s` | %s | %s | %s | %s |\n",
 			r.PR, r.CaseID, cutoff, exported, validated, truncate(notes, 100))
-	}
-
-	var warned []CaseResult
-	for _, r := range results {
-		if len(r.Warnings) > 0 {
-			warned = append(warned, r)
-		}
-	}
-	if len(warned) > 0 {
-		sb.WriteString("\n## Warnings\n\n")
-		sb.WriteString("Paths in the source snapshot that trip the engine's oracle-name heuristic. The\n")
-		sb.WriteString("vocabulary belongs to the upstream repository, so these are reported rather than\n")
-		sb.WriteString("renamed; they need a protocol waiver on the engine side, not a change here.\n\n")
-		for _, r := range warned {
-			fmt.Fprintf(&sb, "- **PR %d**\n", r.PR)
-			for _, w := range r.Warnings {
-				fmt.Fprintf(&sb, "  - %s\n", w)
-			}
-		}
 	}
 
 	if !validationRun {

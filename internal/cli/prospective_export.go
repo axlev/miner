@@ -32,12 +32,8 @@ var prospectiveExportCmd = &cobra.Command{
 			ProspectiveOut:  f.prospectiveOut,
 			EvaluatorOut:    f.evaluatorOut,
 		}
-		warnings, err := prospectiveexport.Export(cmd.Context(), opt)
-		if err != nil {
+		if err := prospectiveexport.Export(cmd.Context(), opt); err != nil {
 			return err
-		}
-		for _, w := range warnings {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", w)
 		}
 		fmt.Printf("Exported prospective bundle to %s (evaluator-only artifacts at %s)\n", f.prospectiveOut, f.evaluatorOut)
 		return nil

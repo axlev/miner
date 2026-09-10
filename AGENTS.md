@@ -65,6 +65,34 @@ notes as a substitute for reading the docs — they drift. Update `docs/export-c
   contract says that list is meant to be tuned against real exports, tuning it changes no
   bundle's structure, and it is warnings-only here — so it may move on either side without
   being treated as a break.
+- **`engine-runner`'s boundary validator is the single authority on admissibility, and
+  this repo keeps no copy of its rules.** A mirror existed until 2026-09-10 and was
+  deleted: two hand-maintained rule tables in two repos with no shared memory and no way
+  to compare them (Go forbids importing another module's `internal/` packages) meant a
+  rule tightened upstream would leave the miner publishing bundles the engine rejects,
+  undetectably. Do not reintroduce one — if you find yourself copying a rule out of
+  `boundaryvalidator.go`, that is the mistake this rule exists to prevent. Verify against
+  the real validator instead: `miner cohort-verify --bench-repo <engine-runner>` runs it
+  over every bundle it builds. Two things in `internal/prospectiveexport/bundle.go` are
+  deliberately *not* copies and must stay: `buildChecksums`, which produces an artifact
+  the engine merely verifies, and `evaluatorArtifactBasenames`, which blocks exact
+  `ground_truth.json`-style filenames the engine's in-snapshot heuristic omits on purpose.
+- Fail closed whenever temporal provenance, repository identity, PR identity, or Git object
+  identity is uncertain: omit the field, reject the record, or error out — do not guess, and do
+  not widen a validation check to "make the test pass" without confirming the widening is
+  actually safe against `docs/export-contract.md` §7.
+- Prefer closed schemas, deterministic ordering, immutable outputs, explicit schema versions,
+  canonical patches, and SHA-256 artifact hashes for anything new you add to an export path.
+- **Treat the bundle wire contract as frozen in both directions.** Do not change the
+  `reviewer/` + `control/` layout, the entry names, the pinned schema-version strings, the
+  reviewer metadata field allowlist, or the checksum-manifest semantics unless a new product
+  requirement cannot be implemented without it — not for tidiness, naming, or a nicer shape.
+  If a requirement does force a change, bump the schema version rather than redefining an
+  existing one, and record why in the Decisions log. This binds the miner as much as the
+  engine. The oracle-name heuristic lists are explicitly outside the freeze: the engine's
+  contract says that list is meant to be tuned against real exports, tuning it changes no
+  bundle's structure, and it is warnings-only here — so it may move on either side without
+  being treated as a break.
 - **The boundary rules are mirrored across two repos, and nothing detects drift.**
   `engine-runner/internal/boundaryvalidator` is authoritative for what the engine accepts.
   `validateBundle` and its constants in `internal/prospectiveexport/bundle.go`
@@ -177,6 +205,18 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-10: Deleted the miner's copy of `engine-runner`'s boundary rules
+  (`validateBundle` and its rule tables in `internal/prospectiveexport/bundle.go`), making
+  the engine's validator the single gate. The mirror had been added the previous day to
+  fail fast at export; within a day it was already the thing needing a documentation rule
+  to keep it honest, which is the signal that the duplication — not the drift — was the
+  problem. `cohort-verify --bench-repo` runs the real validator over every bundle, so
+  fail-fast is preserved without a second implementation. Kept `buildChecksums`
+  (production, not validation) and `evaluatorArtifactBasenames` (a gap the engine
+  deliberately delegates: its in-snapshot heuristic omits `ground_truth` because ML repos
+  use the term legitimately, so nothing else catches a literal `ground_truth.json`).
+  `Export` no longer returns advisory warnings, since the only source of them was the
+  mirrored heuristic; the engine reports those itself.
 - 2026-09-09: GitHub repo renamed `benchmark-miner` -> `miner` (by the user, via the GitHub
   UI; `gh` is not authenticated on this machine, so it could not be done from a session) and
   `origin` re-pointed to `git@github.com:axlev/miner.git`. This closes the last straggler from
