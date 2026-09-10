@@ -231,8 +231,18 @@ reports a defect every time scores perfectly on that axis.
 information. It lives in the evaluator-only material, and the engine should not need it to
 run a case.
 
-Your fixture adapter keys scenarios by case id, which is why every run currently stops at
-`reasoner-1`. These are the ids:
+**A run stopping at `reasoner-1` is the expected, correct outcome of an admissibility
+check — do not register fixture scenarios for these ids.** `bench` defaults to the
+deterministic fixture adapter, which replays canned responses keyed by case id; a real
+case id has none, so the run fails at the adapter. That failure happens *after*
+`FreshWorkspace` and `contextbuilder.Prepare` have both succeeded, which is precisely why
+it is the proof: both containment gates passed and the bundle is admissible. Registering
+scenarios would manufacture fake reviews of real cases. A real review means pointing
+`-agents` at a vendor arm, which spends money and is not what an admissibility check
+should do.
+
+The ids are listed for correlating results and artifacts, not because anything needs
+registering against them:
 
 ```text
 case-fd8ee329b0d9d6b9    case-deaebcc7295e2f7a    case-fe99bcf9d9f8ba66

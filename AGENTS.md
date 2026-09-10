@@ -211,6 +211,17 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-10: Two corrections from `coder-engine-runner` over the new direct session
+  channel. (a) A run stopping at `reasoner-1` is the *expected and correct* result of
+  `cohort-verify`, not a shortfall: `bench` defaults to the deterministic fixture adapter,
+  a real case id has no canned scenario, and the failure occurs *after* `FreshWorkspace`
+  and `contextbuilder.Prepare` succeed — reaching it is what proves both gates passed.
+  Never register fixture scenarios for real case ids; that manufactures fake reviews of
+  real cases. Earlier wording in the release note implied the opposite and has been fixed.
+  (b) `docs/frr-pilot-v1-cohort.md` had been shared with `coder-engine-runner`, which §13
+  gives no oracle access. Its own warning line said only "must never reach a reviewer",
+  which reads as permitting circulation to a coding agent; the label now names §13 and both
+  coder roles. Distribution of that document is alex's call, not this session's.
 - 2026-09-10: Reselected the cohort's three negative controls after the user asked how
   they had been picked. The honest answer was that they came from eleven arbitrarily
   sampled rows, not the full population of 360, and that a claim written into the cohort

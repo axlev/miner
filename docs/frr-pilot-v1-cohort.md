@@ -7,8 +7,13 @@ This is the case list for the first cohort, per `system-design.md` §15 Mileston
 ("Run 5-10 cases without per-case prompt tuning"). It records what was selected, why,
 and enough provenance to rebuild the identical bundles.
 
-**Evaluator-facing.** The rationale below cites retrospective signal counts, which is
-legitimate for choosing benchmark cases and must never reach a reviewer.
+**Evaluator-facing — and that is narrower than "not for reviewers".** This document names
+which cases carry a defect and which do not, and describes each defect. That is oracle
+content. Under `system-design.md` §13 the roles permitted to hold it are the miner runtime
+and the evaluator; `coder-miner` and `coder-engine-runner` both have "Oracle O: No", so it
+should not be circulated to either coding agent, not only kept from reviewers. An earlier
+version of this line said merely "must never reach a reviewer", which reads as permitting
+exactly that circulation.
 
 ## Reproducing
 
@@ -169,6 +174,13 @@ were selected by ranking all 360 and reading the diffs.
 
 All ten exported and passed boundary validation via
 `cohort-verify --bench-repo /home/alex/repos/engine-runner` on 2026-09-10, exercising both
-of the engine's containment gates (`boundaryvalidator` and `contextbuilder`). The runs
-proceed to the reasoner stage and stop there because the fixture adapter has no scenario
-registered for a real case id, which is expected and unrelated to bundle admissibility.
+of the engine's containment gates (`boundaryvalidator` and `contextbuilder`).
+
+**Stopping at `reasoner-1` is the expected result and is the proof, not a shortfall.**
+`bench` defaults to the deterministic fixture adapter, which replays canned responses keyed
+by case id; a real case id has none, so the run fails at the adapter — *after*
+`FreshWorkspace` and `contextbuilder.Prepare` have both succeeded. Reaching that failure is
+what demonstrates both gates passed. Do not register fixture scenarios for real case ids:
+that would manufacture fake reviews of real cases. A genuine review requires pointing
+`-agents` at a vendor arm (`configs/agents/{haiku,sonnet,opus}.yaml` in `engine-runner`),
+which spends money and is not what an admissibility check should do.
