@@ -331,6 +331,9 @@ trip the engine's oracle-name heuristic are reported as warnings, not failures: 
 vocabulary belongs to the upstream repository and needs a protocol waiver on the engine
 side, not a rename here.
 
+The frozen pilot cohort, its selection rationale, and the provenance needed to rebuild
+the identical bundles are recorded in `docs/frr-pilot-v1-cohort.md`.
+
 ---
 
 ## Data Schema Reference

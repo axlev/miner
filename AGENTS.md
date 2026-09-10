@@ -211,6 +211,14 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-10: Froze the FRR pilot-v1 cohort at ten cases (`docs/frr-pilot-v1-cohort.md`),
+  all verified through both engine gates. Seven positives, three negatives. The negatives
+  are structural, not filler: Milestone 4 has to measure false-positive suppression, and
+  with only positives a reviewer that always reports a defect scores perfectly. Selection
+  spans seven subsystems and two orders of magnitude in diff size rather than following a
+  global rank, whose top is almost entirely `bgpd`. Selection read retrospective evidence,
+  which is legitimate for benchmark construction but means `internal/heuristics` scoring
+  must not be tuned by anyone who selected from this data.
 - 2026-09-10: `engine-runner` accepted the request to admit in-tree relative symlinks
   (`checkSnapshotSymlink` in its `boundaryvalidator`), making FRR exportable: 1,667 of
   1,667 candidates, up from 0. It went further than asked on two points — the relaxation
