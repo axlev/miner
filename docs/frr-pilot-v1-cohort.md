@@ -21,7 +21,7 @@ go run ./cmd/miner cohort-verify \
   --input /home/alex/data/FRR20260821/data/candidates.jsonl \
   --repo /home/alex/data/FRR20260821/data/repos/FRRouting/frr.git \
   --cache-dir /home/alex/data/FRR20260821/cache \
-  --prs 16738,16141,16467,17134,16194,15632,15624,15082,17190,15227 \
+  --prs 16738,16141,16467,17134,16194,15632,15624,17298,16155,15208 \
   --out output/frr-pilot-cohort \
   --bench-repo /home/alex/repos/engine-runner
 ```
@@ -34,7 +34,7 @@ derived from the inputs below.
 
 | Input | Value |
 |---|---|
-| miner commit | `40fd728d24056006dd98163068cd66fbd8dd7185` |
+| miner commit (exporter code) | `40fd728d24056006dd98163068cd66fbd8dd7185` |
 | engine-runner commit | `254a7009fbe6354b19e0da0ddd1e149ebc475f6a` |
 | candidates file | `/home/alex/data/FRR20260821/data/candidates.jsonl` |
 | candidates SHA-256 | `7f44b454f05e69c4a854dbd3dec894e92657b8b50a31ddb4fe97675c48a287fb` |
@@ -78,38 +78,66 @@ different data and the rationale may no longer hold.
 
 | PR | Case ID | Subsystem | Files | +/- | Heuristic score | Cutoff |
 |---|---|---|---:|---|---:|---|
-| 15082 | `case-b1bd435424400098` | lib/include | 9 | +840/-14 | 0.20 | 2024-05-28T21:01:20Z |
-| 17190 | `case-b17c021ff95ec195` | isisd | 2 | +38/-31 | 0.45 | 2024-10-29T14:08:29Z |
-| 15227 | `case-7054a0906a814253` | bgpd | 3 | +86/-116 | 0.35 | 2024-01-25T07:55:08Z |
+| 17298 | `case-3a74a3a25bda9041` | isisd | 1 | +15/-9 | 0.55 | 2024-10-29T18:40:53Z |
+| 16155 | `case-9ba8fca704a95e70` | zebra | 1 | +9/-6 | 0.45 | 2024-06-05T13:47:44Z |
+| 15208 | `case-c96a113c3301c4fa` | pimd | 1 | +2/-4 | 0.45 | 2024-01-24T13:29:27Z |
 
-- **15082** — Linux `IFF_LOWER_UP` flag handling. A large change to flag semantics that
-  looks risky and was not corrected.
-- **17190** — `show isis vrf all summary json`. The highest stateful risk score of any
-  candidate with no corrective evidence: the heuristic expected a defect, the history
-  disagrees.
-- **15227** — titled "Some fixes", net deletion of 30 lines, no follow-up in two years.
+Each was chosen by **reading its diff**, not by inferring from size and score. The test
+applied: would a competent reviewer plausibly flag this, and would flagging it be wrong?
+
+- **17298** `isisd` — restructures `else if (old_state == ISIS_ADJ_UP)` into
+  `else { if (old_state == ISIS_ADJ_UP) { ... } ... }`, which widens the scope of the
+  `if (new_state == ISIS_ADJ_DOWN)` block below: it now runs in every non-first-branch
+  case rather than only when the adjacency was up. Reads exactly like an accidental
+  brace-scope error. It is the intended memory-leak fix. Ranks 2nd of 360 by heuristic
+  score.
+- **16155** `zebra` — `basename(strdupa(netnspath))`, holding the result in a pointer used
+  later. A stack-allocated copy passed to a function permitted to modify its argument is a
+  textbook lifetime-and-aliasing hazard. It is the correct GCC14 fix.
+- **15208** `pimd` — `yang_dnode_get_pimaddr(&source_addr, args->dnode, "./source-addr")`
+  becomes `(..., NULL)`. Passing NULL where a path string was reads as a null dereference.
+  It is itself the fix for a crash.
 
 ## Why the cohort is shaped this way
 
 **Three negatives are load-bearing.** Milestone 4's exit criterion requires results to
 distinguish false-positive suppression. If every case contains a defect, a reviewer that
-reports one every time scores perfectly, and that axis measures nothing. The negatives
-are chosen to bait rather than to be obviously safe: substantial diffs with non-trivial
-heuristic scores, not documentation changes no reviewer would flag.
+reports one every time scores perfectly, and that axis measures nothing. The negatives are
+chosen to bait: each contains a construct that genuinely looks like a defect — a widened
+branch scope, a stack-buffer lifetime hazard, a NULL passed where a string was — and is
+not one.
 
-**Size spans two orders of magnitude**, from `+2/-0` to `+840/-14`, which is what makes
-cost per incremental benefit measurable rather than a single point.
+**What was rejected matters as much as what was chosen.** PR 17345 (`nhrpd`, 13 files) was
+the right size to give the negatives a large case, but it rewrites a `memcmp` over
+authentication secrets. A reviewer flagging non-constant-time comparison of a secret would
+arguably be *correct*, so scoring it as a false positive would mismeasure the very axis
+these cases exist to measure. A negative control must be one where flagging it is
+genuinely wrong; security-adjacent code rarely qualifies. The other large zero-signal
+candidates were license headers, Docker packaging, or test data — nothing a reviewer would
+flag, so they measure nothing either.
+
+**Size spans two orders of magnitude**, from `+2/-0` in one file (17134) to `+300/-142`
+across nine (15624), which is what makes cost per incremental benefit measurable rather
+than a single point. Note the positives carry that spread and the negatives do not — see
+the caveat below.
 
 **Seven subsystems**, so no single bug class dominates. Selection deliberately did not
 follow a global ranking: the top of a ranking by signal strength is overwhelmingly
 `bgpd`, and a cohort drawn that way cannot discriminate across the axes being measured.
 
-**bgpd is 3 of 10 (30%)** against its 35% share of all candidates — close to
-representative, after 15624 was added and 16219 (`bgpd`, 1 file, +10/-7) dropped to hold
-the cohort at ten. 16219 was the least distinctive of the four `bgpd` cases once 15624
-covered the same subsystem with more substance.
+**bgpd is 2 of 10 (20%)** against its 35% share of all candidates, after 15624 was added
+and 16219 (`bgpd`, 1 file, +10/-7) dropped to hold the cohort at ten. 16219 was the least
+distinctive of the `bgpd` cases once 15624 covered that subsystem with more substance.
+
+**Negative subsystems deliberately overlap with positive ones** (`isisd` and `zebra`
+appear in both). If the negatives lived only in subsystems that never appear as positives,
+subsystem would become a proxy for the answer.
 
 ## Caveats
+
+**All three negatives are single-file.** No larger candidate was both good bait and
+safely wrong-to-flag — see the 17345 rejection above. False-positive rate on large diffs,
+where it is plausibly highest, is therefore not measured by this cohort.
 
 **"No corrective evidence" is not proof of correctness.** It means the correlator found
 no corrective commit within the observation window (dataset built 2026-08-21, cases from
@@ -132,6 +160,12 @@ scoring must not be tuned by anyone who selected from this data — see `AGENTS.
 use retrospective data to construct reviewer-facing content, even indirectly."
 
 ## Verification
+
+**Negatives reselected 2026-09-10.** An earlier version used 15082, 17190 and 15227,
+chosen from eleven arbitrarily-sampled rows rather than the full population of 360, and
+described as more principled than the process was. That version also asserted 17190 had
+the highest heuristic score of any zero-signal candidate; it ranks 7th. The current three
+were selected by ranking all 360 and reading the diffs.
 
 All ten exported and passed boundary validation via
 `cohort-verify --bench-repo /home/alex/repos/engine-runner` on 2026-09-10, exercising both

@@ -237,15 +237,15 @@ Your fixture adapter keys scenarios by case id, which is why every run currently
 ```text
 case-fd8ee329b0d9d6b9    case-deaebcc7295e2f7a    case-fe99bcf9d9f8ba66
 case-83d945a6dd4e5785    case-c21d519dfa3bed45    case-322abe6a80cd0d1c
-case-de6d5d30cb197060    case-b1bd435424400098    case-b17c021ff95ec195
-case-7054a0906a814253
+case-de6d5d30cb197060    case-3a74a3a25bda9041    case-9ba8fca704a95e70
+case-c96a113c3301c4fa
 ```
 
 They are stable: each is a SHA-256 of repository, PR number and cutoff, so re-exporting
 the same case always yields the same id.
 
 One thing worth knowing before these run for real. The cases span two orders of magnitude
-in diff size, from `+2/-0` in a single file to `+840/-14` across nine — chosen so cost per
+in diff size, from `+2/-0` in a single file to `+300/-142` across nine — chosen so cost per
 incremental benefit is a curve rather than a point. Every snapshot is the full FRR tree,
 about 48 MB and 7,600 files, regardless of how small the diff is. If per-stage budgets
 assume a context proportional to the diff, the small cases will look anomalously expensive

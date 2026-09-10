@@ -211,6 +211,17 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-10: Reselected the cohort's three negative controls after the user asked how
+  they had been picked. The honest answer was that they came from eleven arbitrarily
+  sampled rows, not the full population of 360, and that a claim written into the cohort
+  doc ("highest heuristic score of any zero-signal candidate") was false — it ranked 7th.
+  Redone by ranking all 360 and *reading the diffs*: a negative control has to contain a
+  construct that genuinely looks like a defect and is not one, which cannot be judged from
+  file counts and scores. Also rejected PR 17345 despite it fixing the "all negatives are
+  single-file" gap, because it rewrites a `memcmp` over authentication secrets and a
+  reviewer flagging non-constant-time comparison would arguably be right — scoring that as
+  a false positive would mismeasure the axis. Security-adjacent code rarely makes a safe
+  negative control.
 - 2026-09-10: Froze the FRR pilot-v1 cohort at ten cases (`docs/frr-pilot-v1-cohort.md`),
   all verified through both engine gates. Seven positives, three negatives. The negatives
   are structural, not filler: Milestone 4 has to measure false-positive suppression, and
