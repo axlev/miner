@@ -17,9 +17,15 @@ import (
 
 // Schema version strings for the cohort artifacts. Both are new artifacts, not
 // revisions of the pipeline record (model.SchemaVersion) or of any bundle entry.
+//
+// v2 (2026-09-15): cases carry uninspected_commit_count, correlation_counted and
+// earliest_fix_date; the manifest records min_fix_date and the exclusion reasons
+// uncounted_negative, uninspected_negative, no_fix_date and fix_before_min_date. A
+// negative is now refused unless its record was correlated by a counting build and
+// its count is zero.
 const (
-	CaseSchemaVersion     = "cohort-case/v1"
-	ManifestSchemaVersion = "cohort-manifest/v1"
+	CaseSchemaVersion     = "cohort-case/v2"
+	ManifestSchemaVersion = "cohort-manifest/v2"
 
 	// DefaultMinExposureDays is the pre-registered exposure floor
 	// (docs/h1-pre-registration.md, "Exposure guard"). It is a policy value, not a
@@ -44,6 +50,10 @@ type ExportOptions struct {
 	PositiveSignals string // "strong" or "any"
 	MinExposureDays int
 	Positives       []int // explicit positive shortlist; nil means every qualifying record
+	// MinFixDate, when non-zero, admits a positive only if its earliest corrective
+	// signal is at or after this instant (pre-registration §3: the fix must postdate
+	// the treatment model's training cutoff). Recorded in the manifest.
+	MinFixDate time.Time
 }
 
 // Cell is the matching key. A negative is only ever paired with a positive in the
@@ -62,17 +72,25 @@ type Cell struct {
 // adjudicated answer lives in the evaluator-only reason label
 // (schemas/reason-label.schema.json) and may disagree.
 type Case struct {
-	SchemaVersion string                  `json:"schema_version"`
-	SamplerLabel  string                  `json:"sampler_label"`
-	PairID        string                  `json:"pair_id"`
-	Repository    string                  `json:"repository"`
-	PR            int                     `json:"pr"`
-	MatchedPR     int                     `json:"matched_pr"`
-	ExposureDays  int                     `json:"exposure_days"`
-	ChangedLines  int                     `json:"changed_lines"`
-	Cell          Cell                    `json:"cell"`
-	RecordSHA256  string                  `json:"record_sha256"`
-	Record        model.PRCandidateRecord `json:"record"`
+	SchemaVersion string `json:"schema_version"`
+	SamplerLabel  string `json:"sampler_label"`
+	PairID        string `json:"pair_id"`
+	Repository    string `json:"repository"`
+	PR            int    `json:"pr"`
+	MatchedPR     int    `json:"matched_pr"`
+	ExposureDays  int    `json:"exposure_days"`
+	ChangedLines  int    `json:"changed_lines"`
+	Cell          Cell   `json:"cell"`
+	// CorrelationCounted is true when the record was correlated by a build that
+	// counts uninspected commits (provenance.correlated_by set). When false the
+	// count below is unknown, not zero, and the record cannot be a negative.
+	CorrelationCounted     bool `json:"correlation_counted"`
+	UninspectedCommitCount int  `json:"uninspected_commit_count"`
+	// EarliestFixDate is the earliest corrective-signal timestamp (strong, or medium
+	// when the positive tier is "any" and no strong signal exists). Absent for CLEAN.
+	EarliestFixDate *time.Time              `json:"earliest_fix_date,omitempty"`
+	RecordSHA256    string                  `json:"record_sha256"`
+	Record          model.PRCandidateRecord `json:"record"`
 }
 
 // Pair records one positive/negative match in the manifest.
@@ -92,6 +110,10 @@ type Exclusions struct {
 	BelowMinScore        int `json:"below_min_score"`
 	PartialEvidence      int `json:"partial_evidence"`
 	NotInPositiveList    int `json:"not_in_positive_list"`
+	UncountedNegative    int `json:"uncounted_negative"`   // zero signals, but no correlated_by: unverifiable
+	UninspectedNegative  int `json:"uninspected_negative"` // zero signals, but some diffs were not inspected
+	NoFixDate            int `json:"no_fix_date"`
+	FixBeforeMinDate     int `json:"fix_before_min_date"`
 	UnmatchedPositive    int `json:"unmatched_positive"`
 	UnusedNegative       int `json:"unused_negative"`
 }
@@ -119,6 +141,7 @@ type Manifest struct {
 		PositiveSignals string  `json:"positive_signals"`
 		MinExposureDays int     `json:"min_exposure_days"`
 		Positives       []int   `json:"positives"`
+		MinFixDate      string  `json:"min_fix_date"` // RFC3339, or "" when not applied
 	} `json:"filters"`
 	Matching struct {
 		ScoreBand  string `json:"score_band"`
@@ -171,14 +194,40 @@ func exposureDays(rec *model.PRCandidateRecord) (int, bool) {
 	return int(end.Sub(merged).Hours() / 24), true
 }
 
-// isNegative is the sampling rule for CLEAN: nothing at any tier. Absence of strong
-// and medium alone is not enough (docs/h1-pre-registration.md, "Negatives"). A
-// non-zero rank score with no signals would mean the record's own fields disagree,
+// isZeroSignal is the first half of the CLEAN rule: nothing at any tier. Absence of
+// strong and medium alone is not enough (docs/h1-pre-registration.md, "Negatives").
+// A non-zero rank score with no signals would mean the record's own fields disagree,
 // and such a record is not trusted as a negative either.
-func isNegative(rec *model.PRCandidateRecord) bool {
+func isZeroSignal(rec *model.PRCandidateRecord) bool {
 	r := &rec.Retrospective
 	return len(r.StrongSignals) == 0 && len(r.MediumSignals) == 0 && len(r.WeakSignals) == 0 &&
 		len(r.CommitRelationships) == 0 && r.SummaryRankScore == 0
+}
+
+// correlationCounted reports whether the record's uninspected-commit count exists at
+// all. Records correlated before builds recorded provenance.correlated_by have no
+// count, and "no signals" from such a run cannot be told apart from "diffs failed".
+func correlationCounted(rec *model.PRCandidateRecord) bool {
+	return rec.Provenance.CorrelatedBy != ""
+}
+
+// earliestFixDate is the earliest corrective-signal timestamp: over strong signals,
+// or over medium signals when the tier is "any" and there is no strong signal.
+func earliestFixDate(rec *model.PRCandidateRecord, tier string) (time.Time, bool) {
+	var best time.Time
+	for _, s := range rec.Retrospective.StrongSignals {
+		if !s.Timestamp.IsZero() && (best.IsZero() || s.Timestamp.Before(best)) {
+			best = s.Timestamp
+		}
+	}
+	if best.IsZero() && tier == "any" {
+		for _, m := range rec.Retrospective.MediumSignals {
+			if !m.Timestamp.IsZero() && (best.IsZero() || m.Timestamp.Before(best)) {
+				best = m.Timestamp
+			}
+		}
+	}
+	return best, !best.IsZero()
 }
 
 func isPositive(rec *model.PRCandidateRecord, tier string) bool {
@@ -230,6 +279,7 @@ type classified struct {
 	exposure int
 	lines    int
 	cell     Cell
+	fixDate  *time.Time
 }
 
 func build(records []model.PRCandidateRecord, opt ExportOptions) ([]Case, *Manifest, error) {
@@ -237,13 +287,16 @@ func build(records []model.PRCandidateRecord, opt ExportOptions) ([]Case, *Manif
 	m.Filters.MinScore = opt.MinScore
 	m.Filters.PositiveSignals = opt.PositiveSignals
 	m.Filters.MinExposureDays = opt.MinExposureDays
+	if !opt.MinFixDate.IsZero() {
+		m.Filters.MinFixDate = opt.MinFixDate.UTC().Format(time.RFC3339)
+	}
 	m.Filters.Positives = append([]int{}, opt.Positives...)
 	sort.Ints(m.Filters.Positives)
 	m.Matching.ScoreBand = "stateful.category as scored (config high_threshold/medium_threshold over the max_cap-capped score)"
 	m.Matching.Subsystem = "most common leading path component of changed_files, stepping through generic containers"
 	m.Matching.SizeBand = "additions+deletions over changed_files: 0, 1-10, 11-50, 51-200, 201-1000, 1001+"
 	m.Matching.Assignment = "positives in ascending PR order; each takes the unused same-cell negative with the nearest stateful score, then nearest changed lines, then lowest PR"
-	m.Matching.Negative = "zero strong, medium and weak signals, no commit relationships, summary_rank_score 0"
+	m.Matching.Negative = "zero strong, medium and weak signals, no commit relationships, summary_rank_score 0, correlated by a counting build (provenance.correlated_by set) with uninspected_commit_count 0"
 	m.Pairs = []Pair{}
 	m.UnmatchedPositives = []int{}
 
@@ -288,15 +341,42 @@ func build(records []model.PRCandidateRecord, opt ExportOptions) ([]Case, *Manif
 		c := classified{rec: rec, exposure: exp, lines: changedLines(rec)}
 		c.cell = Cell{Category: rec.Stateful.Category, Subsystem: subsystemOf(rec.Original.ChangedFiles), SizeBand: sizeBandOf(c.lines)}
 		switch {
-		case isNegative(rec):
+		case isZeroSignal(rec):
 			if explicit[pr] {
 				return nil, nil, fmt.Errorf("PR #%d was listed as a positive but has no corrective evidence at any tier", pr)
 			}
-			negatives[c.cell] = append(negatives[c.cell], c)
+			switch {
+			case !correlationCounted(rec):
+				m.Exclusions.UncountedNegative++
+			case rec.Retrospective.UninspectedCommitCount > 0:
+				m.Exclusions.UninspectedNegative++
+			default:
+				negatives[c.cell] = append(negatives[c.cell], c)
+			}
 		case isPositive(rec, opt.PositiveSignals):
 			if len(explicit) > 0 && !explicit[pr] {
 				m.Exclusions.NotInPositiveList++
 				continue
+			}
+			if fix, ok := earliestFixDate(rec, opt.PositiveSignals); ok {
+				fix = fix.UTC()
+				c.fixDate = &fix
+			}
+			if !opt.MinFixDate.IsZero() {
+				switch {
+				case c.fixDate == nil:
+					if explicit[pr] {
+						return nil, nil, fmt.Errorf("PR #%d was listed as a positive but its corrective signals carry no timestamp", pr)
+					}
+					m.Exclusions.NoFixDate++
+					continue
+				case c.fixDate.Before(opt.MinFixDate):
+					if explicit[pr] {
+						return nil, nil, fmt.Errorf("PR #%d was listed as a positive but its earliest fix (%s) predates --min-fix-date %s", pr, c.fixDate.Format("2006-01-02"), opt.MinFixDate.UTC().Format("2006-01-02"))
+					}
+					m.Exclusions.FixBeforeMinDate++
+					continue
+				}
 			}
 			positives = append(positives, c)
 		default:
@@ -403,17 +483,20 @@ func newCase(c classified, label, pairID string, matched int) (Case, error) {
 		return Case{}, fmt.Errorf("marshal PR #%d: %w", c.rec.Original.Number, err)
 	}
 	return Case{
-		SchemaVersion: CaseSchemaVersion,
-		SamplerLabel:  label,
-		PairID:        pairID,
-		Repository:    c.rec.Original.Repository,
-		PR:            c.rec.Original.Number,
-		MatchedPR:     matched,
-		ExposureDays:  c.exposure,
-		ChangedLines:  c.lines,
-		Cell:          c.cell,
-		RecordSHA256:  digest(raw),
-		Record:        *c.rec,
+		SchemaVersion:          CaseSchemaVersion,
+		SamplerLabel:           label,
+		PairID:                 pairID,
+		Repository:             c.rec.Original.Repository,
+		PR:                     c.rec.Original.Number,
+		MatchedPR:              matched,
+		ExposureDays:           c.exposure,
+		ChangedLines:           c.lines,
+		Cell:                   c.cell,
+		CorrelationCounted:     correlationCounted(c.rec),
+		UninspectedCommitCount: c.rec.Retrospective.UninspectedCommitCount,
+		EarliestFixDate:        c.fixDate,
+		RecordSHA256:           digest(raw),
+		Record:                 *c.rec,
 	}, nil
 }
 

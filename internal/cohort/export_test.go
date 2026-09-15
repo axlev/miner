@@ -2,6 +2,7 @@ package cohort
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,14 @@ func cohortRecord(pr int, subsystem string, lines int, score float64, strong, me
 	if strong+medium > 0 {
 		rec.Retrospective.SummaryRankScore = 1
 	}
+	if strong+medium > 0 {
+		for i := range rec.Retrospective.StrongSignals {
+			rec.Retrospective.StrongSignals[i].Timestamp = rec.Original.MergedAt.Add(time.Duration(30+i) * 24 * time.Hour)
+		}
+		for i := range rec.Retrospective.MediumSignals {
+			rec.Retrospective.MediumSignals[i].Timestamp = rec.Original.MergedAt.Add(time.Duration(60+i) * 24 * time.Hour)
+		}
+	}
 	rec.Provenance = model.Provenance{
 		MinerVersion:      "abc123",
 		ConfigHash:        "cfg",
@@ -50,8 +59,114 @@ func cohortRecord(pr int, subsystem string, lines int, score float64, strong, me
 		ObservationEnd:    observationEnd,
 		TargetRepoHeadSHA: "head",
 		GitHubAPIVersion:  "2022-11-28",
+		CorrelatedBy:      "build-counting",
 	}
 	return rec
+}
+
+func TestNegativesRequireACountedCleanCorrelation(t *testing.T) {
+	uncounted := cohortRecord(2, "bgpd", 20, 0.7, 0, 0, 0, 400)
+	uncounted.Provenance.CorrelatedBy = ""
+	uninspected := cohortRecord(3, "bgpd", 20, 0.7, 0, 0, 0, 400)
+	uninspected.Retrospective.UninspectedCommitCount = 1
+	uninspected.Retrospective.UninspectedCommitSHAs = []string{"deadbeef"}
+	records := []model.PRCandidateRecord{
+		cohortRecord(1, "bgpd", 20, 0.7, 1, 0, 0, 400),
+		uncounted,
+		uninspected,
+		cohortRecord(4, "bgpd", 20, 0.7, 0, 0, 0, 400), // counted, zero: the only real negative
+	}
+	opt := options(t, "out")
+	m, err := Export(records, nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Pairs) != 1 || m.Pairs[0].Negative != 4 {
+		t.Fatalf("pairs = %+v, want 1 matched to 4", m.Pairs)
+	}
+	if m.Exclusions.UncountedNegative != 1 || m.Exclusions.UninspectedNegative != 1 {
+		t.Errorf("exclusions = %+v, want uncounted 1 and uninspected 1", m.Exclusions)
+	}
+	cases := readCases(t, opt.Out)
+	if !cases[0].CorrelationCounted || cases[0].UninspectedCommitCount != 0 || !cases[1].CorrelationCounted {
+		t.Errorf("cases should carry the count for both classes: %+v / %+v", cases[0], cases[1])
+	}
+	if cases[0].EarliestFixDate == nil || !cases[0].EarliestFixDate.Equal(records[0].Retrospective.StrongSignals[0].Timestamp) {
+		t.Errorf("positive earliest_fix_date = %v", cases[0].EarliestFixDate)
+	}
+	if cases[1].EarliestFixDate != nil {
+		t.Errorf("negative must not carry earliest_fix_date: %v", cases[1].EarliestFixDate)
+	}
+	if cases[0].SchemaVersion != "cohort-case/v2" || m.SchemaVersion != "cohort-manifest/v2" {
+		t.Errorf("schema versions %q / %q", cases[0].SchemaVersion, m.SchemaVersion)
+	}
+}
+
+// An uncounted positive is informational, never refused: a strong signal does not
+// depend on the diff, so an old correlation still proves RISKY.
+func TestUncountedPositiveIsAdmittedAndFlagged(t *testing.T) {
+	pos := cohortRecord(1, "bgpd", 20, 0.7, 1, 0, 0, 400)
+	pos.Provenance.CorrelatedBy = ""
+	records := []model.PRCandidateRecord{pos, cohortRecord(2, "bgpd", 20, 0.7, 0, 0, 0, 400)}
+	opt := options(t, "out")
+	if _, err := Export(records, nil, opt); err != nil {
+		t.Fatal(err)
+	}
+	cases := readCases(t, opt.Out)
+	if cases[0].CorrelationCounted {
+		t.Errorf("positive should be flagged as uncounted")
+	}
+}
+
+func TestMinFixDateAdmitsOnlyLateFixes(t *testing.T) {
+	late := cohortRecord(1, "bgpd", 20, 0.7, 1, 0, 0, 400)
+	late.Retrospective.StrongSignals[0].Timestamp = time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	early := cohortRecord(3, "bgpd", 20, 0.7, 1, 0, 0, 400)
+	early.Retrospective.StrongSignals[0].Timestamp = time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	undated := cohortRecord(5, "bgpd", 20, 0.7, 1, 0, 0, 400)
+	undated.Retrospective.StrongSignals[0].Timestamp = time.Time{}
+	records := []model.PRCandidateRecord{
+		late, early, undated,
+		cohortRecord(2, "bgpd", 20, 0.7, 0, 0, 0, 400),
+		cohortRecord(4, "bgpd", 20, 0.7, 0, 0, 0, 400),
+		cohortRecord(6, "bgpd", 20, 0.7, 0, 0, 0, 400),
+	}
+	opt := options(t, "out")
+	opt.MinFixDate = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	m, err := Export(records, nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Pairs) != 1 || m.Pairs[0].Positive != 1 {
+		t.Fatalf("pairs = %+v, want only PR 1", m.Pairs)
+	}
+	if m.Exclusions.FixBeforeMinDate != 1 || m.Exclusions.NoFixDate != 1 {
+		t.Errorf("exclusions = %+v", m.Exclusions)
+	}
+	if m.Filters.MinFixDate != "2026-06-01T00:00:00Z" {
+		t.Errorf("min_fix_date not recorded: %q", m.Filters.MinFixDate)
+	}
+	for _, prs := range [][]int{{3}, {5}} {
+		o := options(t, fmt.Sprintf("explicit-%d", prs[0]))
+		o.MinFixDate = opt.MinFixDate
+		o.Positives = prs
+		if _, err := Export(records, nil, o); err == nil {
+			t.Errorf("explicit positive %v should fail closed under min-fix-date", prs)
+		}
+	}
+	// The medium fallback applies only under "any".
+	medOnly := cohortRecord(7, "zebra", 20, 0.7, 0, 1, 0, 400)
+	medOnly.Retrospective.MediumSignals[0].Timestamp = time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	o := options(t, "any")
+	o.PositiveSignals = "any"
+	o.MinFixDate = opt.MinFixDate
+	m2, err := Export([]model.PRCandidateRecord{medOnly, cohortRecord(8, "zebra", 20, 0.7, 0, 0, 0, 400)}, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2.Pairs) != 1 {
+		t.Errorf("medium-only positive under any should be admitted by its medium timestamp: %+v", m2)
+	}
 }
 
 func options(t *testing.T, name string) ExportOptions {

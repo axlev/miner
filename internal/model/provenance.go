@@ -10,4 +10,8 @@ type Provenance struct {
 	ObservationEnd    time.Time `json:"observation_end"`      // Strict cut-off date for retrospective evidence
 	TargetRepoHeadSHA string    `json:"target_repo_head_sha"` // HEAD SHA of the target repository
 	GitHubAPIVersion  string    `json:"github_api_version"`   // GitHub API version header (e.g. 2022-11-28)
+	// CorrelatedBy is the build (buildinfo.MinerVersion) that last correlated this
+	// record. Empty means the record was correlated before builds recorded it, so
+	// its uninspected-commit count is absent rather than zero.
+	CorrelatedBy string `json:"correlated_by,omitempty"`
 }

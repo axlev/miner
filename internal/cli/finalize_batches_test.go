@@ -124,7 +124,7 @@ func TestFinalizeBatchDirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 		counts := correlationCounts{}
-		metadata := makeBatchManifest(dataPath, batchNumber, start, end, batchRecords, counts, hash)
+		metadata := makeBatchManifest(dataPath, batchNumber, start, end, batchRecords, counts, hash, "")
 		if err := batchstore.WriteJSONNewAtomic(metadataPath, metadata); err != nil {
 			t.Fatal(err)
 		}
@@ -165,7 +165,7 @@ func TestFinalizeRejectsTamperedBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash, _ := batchstore.HashFile(dataPath)
-	metadata := makeBatchManifest(dataPath, 1, 0, 2, input, correlationCounts{}, hash)
+	metadata := makeBatchManifest(dataPath, 1, 0, 2, input, correlationCounts{}, hash, "")
 	if err := batchstore.WriteJSONNewAtomic(metadataPath, metadata); err != nil {
 		t.Fatal(err)
 	}

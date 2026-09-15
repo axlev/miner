@@ -113,6 +113,16 @@ go run ./cmd/miner finalize-batches \
   --out ./data/correlated.jsonl
 ```
 
+Every correlated record carries `provenance.correlated_by` (the build that correlated
+it) and `retrospective.uninspected_commit_count` with the first twenty
+`uninspected_commit_shas`: post-merge commits in the record's window that had fix
+vocabulary but whose diff could not be read (a git subprocess failed or timed out). A
+non-zero count means "no signals" is not "no evidence"; `cohort-export` refuses such a
+record as a negative, and refuses any record with no `correlated_by` at all, since its
+count is unknown rather than zero. `run.json` and every batch sidecar record the
+correlating build and the batch's uninspected total, so a resumed or finalized run cannot
+mix counted and uncounted batches. Record schema is `1.1.0` (additive) since 2026-09-15.
+
 For small inputs, single-file correlation remains available:
 
 ```bash
@@ -120,6 +130,26 @@ go run ./cmd/miner correlate \
   --in ./data/raw_prs.jsonl \
   --out ./data/correlated.jsonl
 ```
+
+#### Re-correlating a subset
+
+Re-correlating only the records that need it (the zero-signal pool, and positives whose
+fix diff failed) produces a second correlated file. Splice it back before scoring:
+
+```bash
+go run ./cmd/miner merge-correlated \
+  --base ./data/correlated.jsonl \
+  --subset ./data/correlated_subset.jsonl \
+  --out ./data/correlated_merged.jsonl \
+  --report ./data/correlated_merged.flips.json
+```
+
+Records are replaced by PR number, never added or removed. The merge fails closed if a
+subset record is missing from the base, describes a different original change, disagrees
+with the base record's provenance identity, or was not produced by a counting build. The
+flip report (`flip-report/v1`) lists every record whose evidence class changed and the
+`from_none` / `subset_none_before` ratio: the measured rate at which "no signals" was
+really "diffs failed".
 
 #### Step 3: Heuristic Scoring
 Evaluates pre-merge facts against the YAML ruleset:
@@ -367,10 +397,10 @@ go run ./cmd/miner cohort-export \
 
 It writes two files into a new directory, atomically (`--out` must not exist):
 
-- `cohort.jsonl` — one `cohort-case/v1` line per case: `sampler_label` (`RISKY` or
+- `cohort.jsonl` — one `cohort-case/v2` line per case: `sampler_label` (`RISKY` or
   `CLEAN`), `pair_id`, `matched_pr`, `exposure_days`, `changed_lines`, the matching
   `cell`, `record_sha256`, and the unmodified pipeline record under `record`.
-- `cohort-manifest.json` — one `cohort-manifest/v1` object identifying the cohort:
+- `cohort-manifest.json` — one `cohort-manifest/v2` object identifying the cohort:
   record counts, `records_sha256` (SHA-256 over the sorted per-record hashes), the
   `config_hash` / `miner_version` / `target_repo_head_sha` / `observation_end` shared by
   every record (non-uniform provenance is refused), the exporter's own build, the input
@@ -398,6 +428,13 @@ Rules, all of which fail closed:
   weak same-file check is bounded (90 days).
 - `--min-score` applies to both classes; `--positive-signals` is `strong` (default) or
   `any` (strong OR medium, the same rule as `export --require-fix-signal`).
+- **Counted correlation.** A negative must come from a record with
+  `provenance.correlated_by` set and `uninspected_commit_count` zero. Records failing
+  either are counted as `uncounted_negative` / `uninspected_negative`. Positives carry
+  the count for information (`correlation_counted`, `uninspected_commit_count`).
+- **`--min-fix-date`** admits a positive only if its earliest corrective signal is on
+  or after that date; every positive case records `earliest_fix_date` (earliest strong
+  timestamp, or earliest medium under `any`). Recorded in the manifest as a filter.
 
 The output is evaluator-facing: it embeds retrospective evidence and must never be given
 to a reviewer or wired into an engine-visible path. To build bundles for the cohort, feed

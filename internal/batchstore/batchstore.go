@@ -14,7 +14,10 @@ import (
 	"miner/internal/storage"
 )
 
-const SchemaVersion = "1.0.0"
+// SchemaVersion 1.1.0 (2026-09-15): run and batch manifests record the correlating
+// build and the uninspected-commit total, so a resumed or finalized run cannot mix
+// counted and uncounted batches.
+const SchemaVersion = "1.1.0"
 
 // RunManifest fixes the identity and partitioning of a resumable correlation run.
 // It is immutable after creation; each completed batch has its own sidecar manifest.
@@ -31,23 +34,28 @@ type RunManifest struct {
 	InputTargetRepoHeadSHA string    `json:"input_target_repo_head_sha"`
 	ObservedRepoHeadSHA    string    `json:"observed_repo_head_sha"`
 	InitialWorkers         int       `json:"initial_workers"`
-	CreatedAt              time.Time `json:"created_at"`
+	// CorrelatorVersion is the build that produced every batch of this run.
+	CorrelatorVersion string    `json:"correlator_version"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // BatchManifest describes one immutable, independently verifiable checkpoint.
 type BatchManifest struct {
-	SchemaVersion     string    `json:"schema_version"`
-	BatchNumber       int       `json:"batch_number"`
-	StartIndex        int       `json:"start_index"`
-	EndIndexExclusive int       `json:"end_index_exclusive"`
-	FirstPRNumber     int       `json:"first_pr_number"`
-	LastPRNumber      int       `json:"last_pr_number"`
-	RecordCount       int       `json:"record_count"`
-	StrongSignalCount int       `json:"strong_signal_count"`
-	MediumSignalCount int       `json:"medium_signal_count"`
-	DataFile          string    `json:"data_file"`
-	DataSHA256        string    `json:"data_sha256"`
-	CompletedAt       time.Time `json:"completed_at"`
+	SchemaVersion     string `json:"schema_version"`
+	BatchNumber       int    `json:"batch_number"`
+	StartIndex        int    `json:"start_index"`
+	EndIndexExclusive int    `json:"end_index_exclusive"`
+	FirstPRNumber     int    `json:"first_pr_number"`
+	LastPRNumber      int    `json:"last_pr_number"`
+	RecordCount       int    `json:"record_count"`
+	StrongSignalCount int    `json:"strong_signal_count"`
+	MediumSignalCount int    `json:"medium_signal_count"`
+	// UninspectedCommitCount is the sum of the batch's per-record counts.
+	UninspectedCommitCount int       `json:"uninspected_commit_count"`
+	CorrelatorVersion      string    `json:"correlator_version"`
+	DataFile               string    `json:"data_file"`
+	DataSHA256             string    `json:"data_sha256"`
+	CompletedAt            time.Time `json:"completed_at"`
 }
 
 func RunManifestPath(dir string) string {

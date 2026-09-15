@@ -1,7 +1,13 @@
 package model
 
 // SchemaVersion defines the current schema version for machine-readable exports.
-const SchemaVersion = "1.0.0"
+//
+// 1.1.0 (2026-09-15): additive. `retrospective.uninspected_commit_count` and
+// `retrospective.uninspected_commit_shas` record commits whose diff the correlator
+// could not inspect, and `provenance.correlated_by` records the build that
+// correlated the record. A record without `correlated_by` predates the count and
+// its zero-signal status is unverifiable.
+const SchemaVersion = "1.1.0"
 
 // PRCandidateRecord represents a single mined PR with pre-merge facts,
 // heuristic assessment, retrospective evidence, and complete provenance.

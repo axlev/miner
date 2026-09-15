@@ -78,6 +78,7 @@ func finalizeBatchDirectory(inputFile, batchDir, outputFile string) error {
 	merged := make([]model.PRCandidateRecord, 0, len(records))
 	totalStrong := 0
 	totalMedium := 0
+	totalUninspected := 0
 	for batchNumber := 1; batchNumber <= run.BatchCount; batchNumber++ {
 		start := (batchNumber - 1) * run.BatchSize
 		end := minInt(start+run.BatchSize, len(records))
@@ -89,12 +90,13 @@ func finalizeBatchDirectory(inputFile, batchDir, outputFile string) error {
 		if err != nil {
 			return fmt.Errorf("validate batch %d: %w", batchNumber, err)
 		}
-		if err := validateBatchMetadata(metadataPath, dataPath, batchNumber, start, end, batchRecords, counts, dataHash); err != nil {
+		if err := validateBatchMetadata(metadataPath, dataPath, batchNumber, start, end, batchRecords, counts, dataHash, run.CorrelatorVersion); err != nil {
 			return err
 		}
 		merged = append(merged, batchRecords...)
 		totalStrong += counts.Strong
 		totalMedium += counts.Medium
+		totalUninspected += counts.Uninspected
 	}
 
 	if len(merged) != len(records) {
@@ -112,7 +114,7 @@ func finalizeBatchDirectory(inputFile, batchDir, outputFile string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Validated %d batches and %d unique PRs (%d strong, %d medium).\n", run.BatchCount, len(merged), totalStrong, totalMedium)
+	fmt.Printf("Validated %d batches and %d unique PRs (%d strong, %d medium, %d uninspected commit diffs; correlated by %s).\n", run.BatchCount, len(merged), totalStrong, totalMedium, totalUninspected, run.CorrelatorVersion)
 	fmt.Printf("Combined JSONL written to %s (sha256=%s). Batch checkpoints were retained.\n", outputFile, outputHash)
 	return nil
 }

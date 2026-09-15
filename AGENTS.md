@@ -195,6 +195,21 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-15: Migration item 1 (timeout accounting). The correlator now counts, per
+  record, the post-merge commits with fix vocabulary whose diff it could not read, and
+  stamps `provenance.correlated_by`; record schema `1.0.0` -> `1.1.0`, batch manifests
+  `1.0.0` -> `1.1.0` (they record the correlating build and refuse to resume or
+  finalize across builds), `cohort-case/v1` -> `v2`, `cohort-manifest/v1` -> `v2`.
+  Chose counting over making a failed diff fatal: a single slow object under NumCPU
+  workers would abort hours of resumable work, while refusing at selection time costs
+  nothing. `cohort-export` refuses a negative whose record is uncounted or has a
+  non-zero count; positives are never refused on it because strong signals do not
+  depend on the diff. Added `merge-correlated` because batch correlation is keyed to
+  one input file and a partial re-correlate has no way back into the full set; its
+  flip report is the measured artifact rate the pre-registration will carry.
+  `--min-fix-date` and `earliest_fix_date` implement the pre-registration's
+  post-training-cutoff rule for positives; the miner records the date, it cannot
+  verify any model's cutoff.
 - 2026-09-15: Applied the `AGENTS.md` corrections from `docs/h1-fitness-review-miner.md`
   §2: the stale "boundary rules are mirrored" bullet (it named `validateBundle` and five
   constants deleted on 2026-09-10) was rewritten in favour of that decision, three

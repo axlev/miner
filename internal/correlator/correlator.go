@@ -251,6 +251,8 @@ func (c *Correlator) CorrelatePR(ctx context.Context, orig *model.OriginalPR, po
 	}
 
 	candidateLinkSHAs := make(map[string]bool)
+	uninspectedCount := 0
+	var uninspectedSHAs []string
 
 	// 1. Scan Post-T0 Commits
 	for _, commit := range postCommits {
@@ -274,15 +276,29 @@ func (c *Correlator) CorrelatePR(ctx context.Context, orig *model.OriginalPR, po
 			strings.Contains(lowerMsg, "close") ||
 			strings.Contains(lowerMsg, "resolve")
 
+		// A diff that cannot be read is counted, not ignored: the commit had fix
+		// vocabulary, so it could have produced a medium or weak signal, and a record
+		// that ends up with no signals must not be mistaken for one with no evidence.
 		var commitSummary *gitx.CommitDiffSummary
+		diffFailed := false
 		getSummary := func() *gitx.CommitDiffSummary {
-			if commitSummary == nil {
+			if commitSummary == nil && !diffFailed {
 				summary, err := c.getCommitDiff(ctx, commit.SHA)
 				if err == nil {
 					commitSummary = summary
+				} else {
+					diffFailed = true
 				}
 			}
 			return commitSummary
+		}
+		countIfUninspected := func() {
+			if diffFailed {
+				uninspectedCount++
+				if len(uninspectedSHAs) < model.MaxUninspectedCommitSHAs {
+					uninspectedSHAs = append(uninspectedSHAs, commit.SHA)
+				}
+			}
 		}
 
 		if hasFixCitation {
@@ -429,6 +445,7 @@ func (c *Correlator) CorrelatePR(ctx context.Context, orig *model.OriginalPR, po
 				}
 			}
 		}
+		countIfUninspected()
 	}
 
 	// 2. Enrich Retrospective Relationships for Qualified Candidate Links
@@ -484,11 +501,13 @@ func (c *Correlator) CorrelatePR(ctx context.Context, orig *model.OriginalPR, po
 	}
 
 	return model.RetrospectiveEvidence{
-		SummaryRankScore:    rankScore,
-		StrongSignals:       strong,
-		MediumSignals:       medium,
-		WeakSignals:         weak,
-		CommitRelationships: relationships,
+		SummaryRankScore:       rankScore,
+		StrongSignals:          strong,
+		MediumSignals:          medium,
+		WeakSignals:            weak,
+		CommitRelationships:    relationships,
+		UninspectedCommitCount: uninspectedCount,
+		UninspectedCommitSHAs:  uninspectedSHAs,
 	}
 }
 

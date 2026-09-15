@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"miner/internal/cohort"
@@ -12,9 +13,9 @@ import (
 )
 
 var cohortExportFlags struct {
-	input, out, name, positiveSignals, positives string
-	minScore                                     float64
-	minExposureDays                              int
+	input, out, name, positiveSignals, positives, minFixDate string
+	minScore                                                 float64
+	minExposureDays                                          int
 }
 
 var cohortExportCmd = &cobra.Command{
@@ -31,6 +32,12 @@ weak — and each is matched 1:1 to one positive on stateful category, subsystem
 coarse changed-lines band, so the two classes cannot be told apart by score, location
 in the tree, or change size. A positive with no same-cell negative is dropped and
 listed in the manifest; if --positives names it explicitly, the export fails instead.
+
+Negatives are additionally refused unless their record was correlated by a build that
+counts uninspected commit diffs (provenance.correlated_by set) and that count is zero:
+"no signals" from a run whose diffs failed is not "no evidence". Positives carry the
+count for information. --min-fix-date, when given, admits a positive only if its earliest
+corrective signal is on or after that date, and each case records earliest_fix_date.
 
 Both classes must have been merged at least --min-exposure-days before the records'
 observation_end. "No evidence found" in a short window is a weak CLEAN label, and
@@ -67,6 +74,14 @@ arguments is a different cohort.`,
 			}
 			positives = append(positives, n)
 		}
+		var minFixDate time.Time
+		if f.minFixDate != "" {
+			t, err := time.Parse("2006-01-02", f.minFixDate)
+			if err != nil {
+				return fmt.Errorf("invalid --min-fix-date (YYYY-MM-DD required): %w", err)
+			}
+			minFixDate = t.UTC()
+		}
 		opt := cohort.ExportOptions{
 			Input:           f.input,
 			Out:             f.out,
@@ -75,6 +90,7 @@ arguments is a different cohort.`,
 			PositiveSignals: strings.ToLower(f.positiveSignals),
 			MinExposureDays: f.minExposureDays,
 			Positives:       positives,
+			MinFixDate:      minFixDate,
 		}
 		m, err := cohort.Export(records, raw, opt)
 		if err != nil {
@@ -98,6 +114,7 @@ func init() {
 	cohortExportCmd.Flags().Float64Var(&f.minScore, "min-score", 0.0, "Minimum stateful score, applied to both classes")
 	cohortExportCmd.Flags().StringVar(&f.positiveSignals, "positive-signals", "strong", "Evidence tier that qualifies a positive: strong, or any (strong OR medium)")
 	cohortExportCmd.Flags().IntVar(&f.minExposureDays, "min-exposure-days", cohort.DefaultMinExposureDays, "Minimum days between merged_at and observation_end, both classes")
+	cohortExportCmd.Flags().StringVar(&f.minFixDate, "min-fix-date", "", "Admit a positive only if its earliest corrective signal is on or after this date (YYYY-MM-DD)")
 	cohortExportCmd.Flags().StringVar(&f.positives, "positives", "", "Comma-separated explicit positive shortlist; each must qualify and match, or the export fails")
 	for _, name := range []string{"out", "name"} {
 		_ = cohortExportCmd.MarkFlagRequired(name)

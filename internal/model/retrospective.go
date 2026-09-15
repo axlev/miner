@@ -21,7 +21,18 @@ type RetrospectiveEvidence struct {
 	MediumSignals       []MediumCorrectiveSignal     `json:"medium_signals"`
 	WeakSignals         []WeakCorrectiveSignal       `json:"weak_signals"`
 	CommitRelationships []CommitRelationshipEvidence `json:"commit_relationships,omitempty"`
+	// UninspectedCommitCount is the number of post-merge commits in this record's
+	// window that carried fix vocabulary but whose diff could not be inspected (a
+	// git subprocess failed or timed out), so no medium or weak signal could have
+	// been derived from them. A non-zero count means "no signals" is not "no
+	// evidence". Only trustworthy when provenance.correlated_by is set.
+	UninspectedCommitCount int `json:"uninspected_commit_count"`
+	// UninspectedCommitSHAs lists the first MaxUninspectedCommitSHAs of those commits.
+	UninspectedCommitSHAs []string `json:"uninspected_commit_shas,omitempty"`
 }
+
+// MaxUninspectedCommitSHAs bounds UninspectedCommitSHAs; the count is exact regardless.
+const MaxUninspectedCommitSHAs = 20
 
 // LineageEvidence captures whether removed pre-fix lines originated in the original PR.
 type LineageEvidence struct {

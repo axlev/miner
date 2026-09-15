@@ -81,6 +81,7 @@ Registered commands:
 - `cohort-report`
 - `cohort-verify`
 - `cohort-export` (added 2026-09-15)
+- `merge-correlated` (added 2026-09-15)
 
 Important internal packages:
 
@@ -97,6 +98,7 @@ Important internal packages:
 | `internal/prospectiveexport` | Reviewer-facing metadata allowlist, temporal validation, and engine-ingestible bundle assembly |
 | `internal/retrospectiveexport` | Evaluator/adjudication evidence materialization |
 | `internal/cohort` | Evaluator-facing cohort selection reports, shortlist verification, and the matched-cohort sampler |
+| `internal/correlatemerge` | Splices a re-correlated subset into the full set by PR number, fail-closed on identity, with a flip report |
 
 All Go packages are under `internal`, so the supported cross-repository boundary is currently files/JSON rather than a Go import API.
 
@@ -133,8 +135,12 @@ export:
   or a caller-selected JSONL, Markdown, or CSV path
 
 cohort-export:
-  <out>/cohort.jsonl                          cohort-case/v1 lines
-  <out>/cohort-manifest.json                  cohort-manifest/v1
+  <out>/cohort.jsonl                          cohort-case/v2 lines
+  <out>/cohort-manifest.json                  cohort-manifest/v2
+
+merge-correlated:
+  <out>                                       merged correlated JSONL
+  <report>                                    flip-report/v1
 
 inspect and stats:
   stdout only
@@ -318,6 +324,27 @@ floor (`observation_end - merged_at`, default 180 days) to both classes, and wri
   exclusion counts by reason. Filter arguments are in the manifest because two exports
   over one candidates file select different cohorts with identical per-record provenance.
 
+**v2 (2026-09-15).** `cohort-case/v2` adds `correlation_counted`,
+`uninspected_commit_count` and `earliest_fix_date`; `cohort-manifest/v2` adds the
+`min_fix_date` filter and the exclusion reasons `uncounted_negative`,
+`uninspected_negative`, `no_fix_date`, `fix_before_min_date`. The negative rule now also
+requires `provenance.correlated_by` set and a zero uninspected count: a record correlated
+by a build that could not tell a failed diff from an empty one is not admissible as CLEAN.
+Positives are never refused on the count (strong signals do not depend on the diff); they
+carry it for information. `--min-fix-date` implements the pre-registration's rule that a
+positive's earliest corrective signal must postdate the treatment model's training cutoff;
+the manifest records the argument value, not any claim about the model.
+
+`merge-correlated` (`internal/correlatemerge`) exists because batch correlation is keyed
+to one input file: a partial re-correlation (the zero-signal pool, plus positives whose
+strong signal has `evidence_scope: unknown` on a non-merge commit, i.e. whose fix diff
+failed) yields a second file that must be spliced back by PR number before `score`. It
+never adds or removes records and fails closed on repository, a byte-different `original`
+block, `observation_end`, `config_hash`, `target_repo_head_sha`, `miner_version`,
+`harvested_at`, a missing `correlated_by`, or two different correlating builds in one
+subset. Its `flip-report/v1` records per-record class transitions and the
+`from_none`/`subset_none_before` ratio, which is the measured timeout-artifact rate.
+
 The directory is written under a temporary name and renamed into place; `--out` must not
 already exist. Ordering is deterministic under input permutation (tests in
 `internal/cohort/export_test.go`). Both files are evaluator-facing (§7 risks 1 and 2
@@ -415,6 +442,13 @@ Each matched rule records its name, regex pattern, weight, match location, and m
 - `medium_signals`
 - `weak_signals`
 - `commit_relationships`
+- `uninspected_commit_count`, `uninspected_commit_shas` — **added 2026-09-15 (record
+  schema 1.1.0, additive).** Post-merge commits in the record's window that carried fix
+  vocabulary but whose diff `CommitDiff` could not read (`internal/correlator/correlator.go`,
+  `getSummary`; four 15-second subprocess timeouts per commit). Only medium and weak
+  signals depend on the diff, so a non-zero count means the absence of those tiers is
+  unverified. The SHA list is capped at 20; the count is exact. Meaningful only when
+  `provenance.correlated_by` is set.
 
 Strong signals include explicit `Fixes` SHA/PR references, reverts, and regression mentions. Medium signals currently come from strict same-path/same-function fix overlap. Weak signals include recent same-file overlap and compatibility fallbacks.
 
@@ -430,6 +464,7 @@ Signals can contain later commit identity, timestamp, exact matching text/contex
 | `observation_end` | Retrospective evidence cutoff; correlation overwrites it with the requested cutoff |
 | `target_repo_head_sha` | Local repository `HEAD` at collect/rebuild time |
 | `github_api_version` | Hard-coded `2022-11-28` identifier |
+| `correlated_by` | **Added 2026-09-15 (1.1.0).** Build that last correlated the record (`internal/buildinfo.MinerVersion` at correlate time). Absent on records correlated before it existed, which is how a consumer tells "counted zero" from "never counted". `correlate` also stamps `schema_version` to the current value. |
 
 ## 5. Reviewer-facing prospective metadata
 

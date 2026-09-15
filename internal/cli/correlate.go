@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"miner/internal/batchstore"
+	"miner/internal/buildinfo"
 	"miner/internal/config"
 	"miner/internal/correlator"
 	"miner/internal/gitx"
@@ -41,8 +42,9 @@ var correlateCmd = &cobra.Command{
 }
 
 type correlationCounts struct {
-	Strong int
-	Medium int
+	Strong      int
+	Medium      int
+	Uninspected int // sum of per-record uninspected commit counts
 }
 
 func runCorrelateCommand(cmd *cobra.Command, args []string) error {
@@ -140,8 +142,8 @@ func runCorrelateCommand(cmd *cobra.Command, args []string) error {
 	if err := storage.WriteJSONL(outFile, records); err != nil {
 		return fmt.Errorf("failed to write correlated records to %q: %w", outFile, err)
 	}
-	fmt.Printf("Successfully correlated %d PRs (%d with strong fix signals, %d with medium signals)\nSaved to %s\n",
-		len(records), counts.Strong, counts.Medium, outFile)
+	fmt.Printf("Successfully correlated %d PRs (%d with strong fix signals, %d with medium signals, %d uninspected commit diffs)\nSaved to %s\n",
+		len(records), counts.Strong, counts.Medium, counts.Uninspected, outFile)
 	return nil
 }
 
@@ -211,6 +213,7 @@ func runBatchedCorrelation(
 		InputTargetRepoHeadSHA: targetHead,
 		ObservedRepoHeadSHA:    observedHead,
 		InitialWorkers:         workers,
+		CorrelatorVersion:      buildinfo.MinerVersion(),
 		CreatedAt:              time.Now().UTC(),
 	}
 	if err := prepareBatchRun(correlateBatchDirFlag, expectedRun); err != nil {
@@ -237,11 +240,11 @@ func runBatchedCorrelation(
 				return fmt.Errorf("validate existing batch %d: %w", batchNumber, err)
 			}
 			if metadataExists {
-				if err := validateBatchMetadata(metadataPath, dataPath, batchNumber, start, end, batchRecords, counts, dataHash); err != nil {
+				if err := validateBatchMetadata(metadataPath, dataPath, batchNumber, start, end, batchRecords, counts, dataHash, expectedRun.CorrelatorVersion); err != nil {
 					return err
 				}
 			} else {
-				metadata := makeBatchManifest(dataPath, batchNumber, start, end, batchRecords, counts, dataHash)
+				metadata := makeBatchManifest(dataPath, batchNumber, start, end, batchRecords, counts, dataHash, expectedRun.CorrelatorVersion)
 				if err := batchstore.WriteJSONNewAtomic(metadataPath, metadata); err != nil {
 					return fmt.Errorf("recover metadata for batch %d: %w", batchNumber, err)
 				}
@@ -263,7 +266,7 @@ func runBatchedCorrelation(
 		if err != nil {
 			return err
 		}
-		metadata := makeBatchManifest(dataPath, batchNumber, start, end, batchRecords, counts, dataHash)
+		metadata := makeBatchManifest(dataPath, batchNumber, start, end, batchRecords, counts, dataHash, expectedRun.CorrelatorVersion)
 		if err := batchstore.WriteJSONNewAtomic(metadataPath, metadata); err != nil {
 			return fmt.Errorf("write metadata for batch %d: %w", batchNumber, err)
 		}
@@ -292,6 +295,8 @@ func correlateRecordSet(
 	var processedCount int64
 	var strongCount int64
 	var mediumCount int64
+	var uninspectedCount int64
+	correlatedBy := buildinfo.MinerVersion()
 	jobs := make(chan int, len(records))
 	var wg sync.WaitGroup
 
@@ -303,6 +308,9 @@ func correlateRecordSet(
 				evidence := corr.CorrelatePR(ctx, &records[idx].Original, commits, obsEnd)
 				records[idx].Retrospective = evidence
 				records[idx].Provenance.ObservationEnd = obsEnd
+				records[idx].Provenance.CorrelatedBy = correlatedBy
+				records[idx].SchemaVersion = model.SchemaVersion
+				atomic.AddInt64(&uninspectedCount, int64(evidence.UninspectedCommitCount))
 				if len(evidence.StrongSignals) > 0 {
 					atomic.AddInt64(&strongCount, 1)
 				} else if len(evidence.MediumSignals) > 0 {
@@ -321,7 +329,7 @@ func correlateRecordSet(
 	}
 	close(jobs)
 	wg.Wait()
-	return correlationCounts{Strong: int(strongCount), Medium: int(mediumCount)}
+	return correlationCounts{Strong: int(strongCount), Medium: int(mediumCount), Uninspected: int(uninspectedCount)}
 }
 
 func prepareBatchRun(dir string, expected batchstore.RunManifest) error {
@@ -366,6 +374,8 @@ func compareRunManifests(actual, expected batchstore.RunManifest) error {
 		return fmt.Errorf("input target repository HEAD changed")
 	case actual.ObservedRepoHeadSHA != expected.ObservedRepoHeadSHA:
 		return fmt.Errorf("observed repository HEAD changed")
+	case actual.CorrelatorVersion != expected.CorrelatorVersion:
+		return fmt.Errorf("correlator build changed: %q != %q; a run's batches must all come from one build", actual.CorrelatorVersion, expected.CorrelatorVersion)
 	}
 	return nil
 }
@@ -423,6 +433,7 @@ func validateBatchData(path string, expected []model.PRCandidateRecord, obsEnd t
 		} else if len(actual[i].Retrospective.MediumSignals) > 0 {
 			counts.Medium++
 		}
+		counts.Uninspected += actual[i].Retrospective.UninspectedCommitCount
 	}
 	hash, err := batchstore.HashFile(path)
 	if err != nil {
@@ -431,29 +442,31 @@ func validateBatchData(path string, expected []model.PRCandidateRecord, obsEnd t
 	return actual, counts, hash, nil
 }
 
-func makeBatchManifest(path string, batchNumber, start, end int, records []model.PRCandidateRecord, counts correlationCounts, dataHash string) batchstore.BatchManifest {
+func makeBatchManifest(path string, batchNumber, start, end int, records []model.PRCandidateRecord, counts correlationCounts, dataHash, correlatorVersion string) batchstore.BatchManifest {
 	return batchstore.BatchManifest{
-		SchemaVersion:     batchstore.SchemaVersion,
-		BatchNumber:       batchNumber,
-		StartIndex:        start,
-		EndIndexExclusive: end,
-		FirstPRNumber:     records[0].Original.Number,
-		LastPRNumber:      records[len(records)-1].Original.Number,
-		RecordCount:       len(records),
-		StrongSignalCount: counts.Strong,
-		MediumSignalCount: counts.Medium,
-		DataFile:          filepath.Base(path),
-		DataSHA256:        dataHash,
-		CompletedAt:       time.Now().UTC(),
+		SchemaVersion:          batchstore.SchemaVersion,
+		BatchNumber:            batchNumber,
+		StartIndex:             start,
+		EndIndexExclusive:      end,
+		FirstPRNumber:          records[0].Original.Number,
+		LastPRNumber:           records[len(records)-1].Original.Number,
+		RecordCount:            len(records),
+		StrongSignalCount:      counts.Strong,
+		MediumSignalCount:      counts.Medium,
+		UninspectedCommitCount: counts.Uninspected,
+		CorrelatorVersion:      correlatorVersion,
+		DataFile:               filepath.Base(path),
+		DataSHA256:             dataHash,
+		CompletedAt:            time.Now().UTC(),
 	}
 }
 
-func validateBatchMetadata(path, dataPath string, batchNumber, start, end int, records []model.PRCandidateRecord, counts correlationCounts, dataHash string) error {
+func validateBatchMetadata(path, dataPath string, batchNumber, start, end int, records []model.PRCandidateRecord, counts correlationCounts, dataHash, correlatorVersion string) error {
 	var metadata batchstore.BatchManifest
 	if err := batchstore.ReadJSON(path, &metadata); err != nil {
 		return err
 	}
-	expected := makeBatchManifest(dataPath, batchNumber, start, end, records, counts, dataHash)
+	expected := makeBatchManifest(dataPath, batchNumber, start, end, records, counts, dataHash, correlatorVersion)
 	switch {
 	case metadata.SchemaVersion != expected.SchemaVersion:
 		return fmt.Errorf("batch %d schema version mismatch", batchNumber)
@@ -463,6 +476,10 @@ func validateBatchMetadata(path, dataPath string, batchNumber, start, end int, r
 		return fmt.Errorf("batch %d PR coverage metadata mismatch", batchNumber)
 	case metadata.StrongSignalCount != expected.StrongSignalCount || metadata.MediumSignalCount != expected.MediumSignalCount:
 		return fmt.Errorf("batch %d signal counts mismatch", batchNumber)
+	case metadata.UninspectedCommitCount != expected.UninspectedCommitCount:
+		return fmt.Errorf("batch %d uninspected commit count mismatch", batchNumber)
+	case metadata.CorrelatorVersion != expected.CorrelatorVersion:
+		return fmt.Errorf("batch %d was correlated by build %q, this build is %q", batchNumber, metadata.CorrelatorVersion, expected.CorrelatorVersion)
 	case metadata.DataFile != expected.DataFile || metadata.DataSHA256 != expected.DataSHA256:
 		return fmt.Errorf("batch %d data identity mismatch", batchNumber)
 	}
