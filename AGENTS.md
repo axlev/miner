@@ -93,20 +93,10 @@ notes as a substitute for reading the docs — they drift. Update `docs/export-c
   undetectably. Do not reintroduce one — if you find yourself copying a rule out of
   `boundaryvalidator.go`, that is the mistake this rule exists to prevent. Verify against
   the real validator instead: `miner cohort-verify --bench-repo <engine-runner>` runs it
-  over every bundle it builds. Two things in `internal/prospectiveexport/bundle.go` are
+  over every bundle it builds; do that after any rule change on either side. Two things in `internal/prospectiveexport/bundle.go` are
   deliberately *not* copies and must stay: `buildChecksums`, which produces an artifact
   the engine merely verifies, and `evaluatorArtifactBasenames`, which blocks exact
   `ground_truth.json`-style filenames the engine's in-snapshot heuristic omits on purpose.
-- **No boundary rule is mirrored here, and that is deliberate (decision 2026-09-10).**
-  `engine-runner/internal/boundaryvalidator` is the only definition of what the engine
-  accepts, and `internal/contextbuilder` the only definition of what reaches a stage.
-  Go forbids importing another module's `internal/` packages and no test can compare
-  two rule tables, which is why a copy was tried for one day and removed. If the engine
-  tightens, adds, or renames a rule, this repo learns of it only by running
-  `miner cohort-verify --bench-repo <engine-runner>` over real bundles; do that after
-  any change on either side. The two things in `bundle.go` that look rule-like are not
-  rules: `buildChecksums` produces an artifact the engine verifies, and
-  `evaluatorArtifactBasenames` closes a gap the engine delegates on purpose.
 - Per the system design's access matrix (§13), you have no production access to raw mined data,
   prospective bundles, oracle bundles, or run results outside this repo — only synthetic
   fixtures and this repo's own source.
@@ -212,7 +202,9 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
   §9–§10 "unimplemented"/"target" were corrected to match the contract's own dated
   headings, `cohort-export` was added to the owned commands, and a "Current target"
   section pointing at `docs/h1-pre-registration.md` was added. No boundary rule was
-  removed.
+  removed. Citation verification then showed the rewrite had produced a second
+  "not mirrored" bullet beside the existing single-authority one; the two were
+  collapsed into the existing bullet.
 - 2026-09-15: Built the H1 negative-control sampler as a new command, `cohort-export`
   (`internal/cohort/export.go`), rather than as flags on `export`, because every
   existing export path selects *for* corrective evidence and an inverted filter would

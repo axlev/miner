@@ -3,10 +3,14 @@
 Date: 2026-09-15. Reviewed from the working tree at `9cfde8e` plus the uncommitted
 cohort-construction change set (`docs/h1-cohort-construction-report.md`); the tree is
 byte-identical to what the pending commit would contain. Read-only pass: no code was
-written. Line numbers refer to that tree. Status terms are `AGENTS.md` lines 169–179.
+written. Line numbers refer to that tree; `AGENTS.md` line numbers in particular refer to
+the file *before* the corrections proposed in §2 were applied (commit `7c0a2cc` shifts
+them by about eleven lines and removes the defects §2 describes). Status terms are
+`AGENTS.md` "Status vocabulary".
 
 Scope: `internal/`, `schemas/`, `docs/`, `README.md`, `AGENTS.md` of this checkout only.
-Nothing under `repos/engine-runner` was read (AGENTS.md lines 125–126), and no mined
+Nothing under `repos/engine-runner` was read (`AGENTS.md` "Data safety": no paths outside
+this checkout without authorization), and no mined
 data was opened.
 
 ---
@@ -79,7 +83,8 @@ occurrence of each; delete 86–101. No rule is lost.
   contamination risks (§7) and recommended-but-unimplemented engine interface (§9–§10)."
 - `docs/export-contract.md` 587: "## 9. Stable contract for `engine-runner` — Implemented
   2026-09-09"; 649: "## 10. Smallest likely miner changes — status as of 2026-09-09".
-- Same file, lines 207–210: "The engine-facing contract itself is implemented and verified".
+- `AGENTS.md` itself, lines 207–210 (pre-edit; "Backlog" section): "The engine-facing contract
+  itself is implemented and verified".
 - Dated decision: line 296 (2026-09-09). Wins.
 
 Proposed line 14–16 text: "…the enumerated contamination risks (§7) and the engine
@@ -221,7 +226,9 @@ the result *incomplete*, whereas the three above make it *wrong*.
 - **Snapshot = tree of `cutoff_commit`, diff = merge-base → head over the same objects**
   (`export.go` 590–601, 659; `gitx/diff.go` 102–112). Correspondence is by construction.
 - **Two output roots, both atomic, neither pre-existing** (`export.go` 625–634, 704–711).
-- **Opaque case IDs** (`export.go` 68–74).
+- **Opaque case IDs** (`internal/prospectiveexport/export.go` 68–74, `GenerateCaseID`).
+  The cohort case (`internal/cohort/export.go` 64–76) carries plain PR numbers by design:
+  it is evaluator-facing, and opacity is applied only where a bundle is produced.
 - **Engine as the single admissibility authority; no rule mirror** (`AGENTS.md` 68–85,
   279–290).
 - **Pilot-v1 cohort frozen** (`docs/frr-pilot-v1-cohort.md` 3). The H1 cohort is a new
@@ -265,7 +272,7 @@ Patterns, all in `internal/correlator/regex_patterns.go` and applied in
 
 | Tier | Signal | Pattern / rule | Window | Plausible false-attribution rate for the introducing commit |
 |---|---|---|---|---|
-| strong | `FIXES_SHA` | line 13; SHA matched by ≥6-hex prefix against merge commit, head, and every PR-branch commit (`correlator.go` 220–231; `matchSHAList` 33–49) | any post-merge commit ≤ `observation_end` (257–263) | Regex error ≈ 0 (must prefix-match a real target SHA). Author error — a `Fixes:` tag naming the wrong commit — is the whole risk; unmeasured, plausibly low single digits % |
+| strong | `FIXES_SHA` | line 13; SHA matched by ≥6-hex prefix against merge commit, head, and every PR-branch commit (`correlator.go` 220–231; `matchSHAList`, `regex_patterns.go` 32–49) | any post-merge commit ≤ `observation_end` (257–263) | Regex error ≈ 0 (must prefix-match a real target SHA). Author error — a `Fixes:` tag naming the wrong commit — is the whole risk; unmeasured, plausibly low single digits % |
 | strong | `FIXES_PR` | line 17: `(fixes\|fixed-by\|closes\|resolves\|reverts) #N` | same | Low: numbers are unique across issues and PRs, so `#N` is the PR or nothing. Residual: "reverts #N" partial reverts and "fixes #N" used loosely ("follow-up to") |
 | strong | `EXPLICIT_REVERT` | lines 21–22, `MatchRevert` 82–102 | same | Low; a revert is a revert. A revert-and-redo (revert for unrelated breakage, re-land next day) is a *true* revert but not a system-level escape — an M4 concern, not a false pointer |
 | strong | `REGRESSION_MENTION` | line 26, `MatchRegressionMentions` 105–121; hex-word captures must prefix-match a target SHA | same | Low for SHA forms. `caused by #N` / `regression in #N` are the loosest: a message discussing PR N as context, not cause |
