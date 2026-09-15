@@ -43,6 +43,7 @@ func init() {
 	RootCmd.AddCommand(cohortExportCmd)
 	RootCmd.AddCommand(mergeCorrelatedCmd)
 	RootCmd.AddCommand(refreshBodyEditsCmd)
+	RootCmd.AddCommand(contaminationKeysCmd)
 }
 
 // Execute runs the root CLI command.

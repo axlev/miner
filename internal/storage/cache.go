@@ -73,6 +73,37 @@ func (c *DiskCache) ReplacePR(repo string, prNumber int, rawData []byte) error {
 	return nil
 }
 
+// FilePath returns the cache path for an arbitrary namespaced artifact under
+// github/<owner>_<repo>/<namespace>/<name>, for caches other than PR bundles.
+func (c *DiskCache) FilePath(repo, namespace, name string) string {
+	cleanRepo := strings.ReplaceAll(repo, "/", "_")
+	return filepath.Join(c.BaseDir, "github", cleanRepo, namespace, name)
+}
+
+// HasFile reports whether a namespaced artifact is cached.
+func (c *DiskCache) HasFile(repo, namespace, name string) bool {
+	_, err := os.Stat(c.FilePath(repo, namespace, name))
+	return err == nil
+}
+
+// WriteFile stores a namespaced artifact, creating the namespace directory.
+func (c *DiskCache) WriteFile(repo, namespace, name string, data []byte) error {
+	path := c.FilePath(repo, namespace, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("failed to create cache dir: %w", err)
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// ReadFile reads a namespaced artifact into target.
+func (c *DiskCache) ReadFile(repo, namespace, name string, target interface{}) error {
+	data, err := os.ReadFile(c.FilePath(repo, namespace, name))
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, target)
+}
+
 // ReadPR reads the raw cached JSON for a PR.
 func (c *DiskCache) ReadPR(repo string, prNumber int, target interface{}) error {
 	path := c.PRCachePath(repo, prNumber)

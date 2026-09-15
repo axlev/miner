@@ -86,6 +86,15 @@ func (r *Repository) DiffPR(ctx context.Context, baseSHA, headSHA string) (*Diff
 	}, nil
 }
 
+// CommitMessage returns the full commit message of sha from the object database.
+func (r *Repository) CommitMessage(ctx context.Context, sha string) (string, error) {
+	out, err := r.gitOutput(ctx, "log", "-1", "--format=%B", sha, "--")
+	if err != nil {
+		return "", fmt.Errorf("git log failed for %s: %w", sha, err)
+	}
+	return strings.TrimRight(string(out), "\n"), nil
+}
+
 // MergeBase resolves the merge-base commit between two refs.
 func (r *Repository) MergeBase(ctx context.Context, a, b string) (string, error) {
 	out, err := r.gitOutput(ctx, "merge-base", a, b)

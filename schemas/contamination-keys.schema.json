@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miner.local/schemas/contamination-keys.schema.json",
+  "title": "Contamination keys (evaluator-only)",
+  "description": "One file per cohort case, <keys-dir>/<case_id>.json, written by `miner contamination-keys` and read by engine-runner's post-hoc contamination scan. It names every fixing commit and PR, any CVE identifier the fixes mention, and quotes the post-merge discussion verbatim. This is oracle-grade material under system-design.md §13: it must never reach a reviewer, an engine-visible path, or either coder role, and it is never written under a prospective bundle root. `fixing_shas` is the list the scanner reads and its shape is frozen (plain full-SHA strings, all tiers); tier and source are in `fixing_commits`, which the scanner ignores. Negatives get a file with empty fixing lists and their own post-merge comments. A source that could not be fetched is listed in `provenance.incomplete`; a non-empty list means the scan may miss outcome text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "fixing_shas", "fixing_pr_numbers", "cve_ids", "discussion", "fixing_commits", "provenance"],
+  "properties": {
+    "schema_version": { "const": "contamination-keys/v1" },
+    "case_id": { "type": "string", "pattern": "^case-[0-9a-f]{16}$", "description": "The bundle's opaque case id: SHA-256 of repository, PR and cutoff, as prospective-export derives it." },
+    "fixing_shas": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-f]{40}$" }, "description": "Every fixing commit, all evidence tiers, sorted. Frozen shape." },
+    "fixing_pr_numbers": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "description": "PRs that carried a fixing commit, resolved by the provider; never the case's own PR." },
+    "cve_ids": { "type": "array", "items": { "type": "string", "pattern": "^CVE-\\d{4}-\\d{4,}$" }, "description": "Identifiers matched by regex over the fixing commit messages, fixing PR text and comments, referenced issues, and the case's own post-merge comments. No other source." },
+    "discussion": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "kind", "body"],
+        "properties": {
+          "source": { "type": "string", "description": "Provider URL when available, else a stable ref such as commit/<sha> or owner/repo#<n>." },
+          "kind": { "type": "string", "enum": ["fixing_commit_message", "fixing_pr_title", "fixing_pr_body", "fixing_pr_comment", "fixing_pr_review_comment", "issue_title", "issue_body", "issue_comment", "own_pr_comment", "own_pr_review_comment"] },
+          "author": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "body": { "type": "string", "description": "Verbatim text." }
+        }
+      }
+    },
+    "fixing_commits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sha", "tier", "source_type", "matched_by"],
+        "properties": {
+          "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+          "tier": { "type": "string", "enum": ["strong", "medium"] },
+          "source_type": { "type": "string" },
+          "matched_by": { "type": "string", "description": "The correlator signal_type that produced the entry." }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["produced_by", "produced_at", "cohort_export", "repository", "pr", "cutoff", "offline", "incomplete"],
+      "properties": {
+        "produced_by": { "type": "string" },
+        "produced_at": { "type": "string", "format": "date-time" },
+        "cohort_export": { "type": "string", "description": "schema_version of the cohort case the keys were built from." },
+        "repository": { "type": "string" },
+        "pr": { "type": "integer", "minimum": 1 },
+        "cutoff": { "type": "string", "format": "date-time" },
+        "sampler_label": { "type": "string" },
+        "offline": { "type": "boolean" },
+        "incomplete": { "type": "array", "items": { "type": "string" }, "description": "Every source not established, with the reason. Empty means complete." },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

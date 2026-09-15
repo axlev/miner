@@ -87,6 +87,7 @@ Registered commands:
 - `cohort-export` (added 2026-09-15)
 - `merge-correlated` (added 2026-09-15)
 - `refresh-body-edits` (added 2026-09-15)
+- `contamination-keys` (added 2026-09-15)
 
 Important internal packages:
 
@@ -104,6 +105,7 @@ Important internal packages:
 | `internal/retrospectiveexport` | Evaluator/adjudication evidence materialization |
 | `internal/cohort` | Evaluator-facing cohort selection reports, shortlist verification, and the matched-cohort sampler |
 | `internal/correlatemerge` | Splices a re-correlated subset into the full set by PR number, fail-closed on identity, with a flip report |
+| `internal/contamkeys` | Per-case contamination keys for the engine's post-hoc scan: fixing commits and PRs, CVE ids, verbatim post-merge discussion; evaluator-only |
 
 All Go packages are under `internal`, so the supported cross-repository boundary is currently files/JSON rather than a Go import API.
 
@@ -146,6 +148,10 @@ cohort-export:
 merge-correlated:
   <out>                                       merged correlated JSONL
   <report>                                    flip-report/v1
+
+contamination-keys:
+  <out>/<case_id>.json                        contamination-keys/v1, one per case
+  <cache-dir>/github/<owner>_<repo>/fixes/    cached provider answers (commit_<sha>_prs, pr_<n>, issue_<n>)
 
 inspect and stats:
   stdout only
@@ -367,6 +373,32 @@ Two facts about the sampler's premises, established from the code on 2026-09-15:
 - `export --require-fix-signal` is OR over strong and medium (`HasAnyFixSignal`,
   `internal/model/candidate.go`). The `--require-signals strong,medium` and
   `--min-stateful-score` flags exist only in `PLAN.md`.
+
+### Contamination keys (evaluator-only)
+
+**Added 2026-09-15.** `contamination-keys` (`internal/contamkeys`) writes one
+`contamination-keys/v1` file per cohort case for `engine-runner`'s post-hoc scan
+(`schemas/contamination-keys.schema.json`). `fixing_shas` is the frozen-shape list the
+scanner reads: every fixing commit from the record's strong and medium signals, full
+SHA, sorted; tier and matching signal are in the sibling `fixing_commits`, which the
+scanner ignores. `fixing_pr_numbers` are resolved by the provider from each fixing
+commit and never include the case's own PR. `cve_ids` are a regex over everything
+gathered; there is no other source. `discussion` quotes, verbatim: fixing commit
+messages (from the mirror), fixing PR titles, bodies, comments and review comments,
+issues referenced by `#N` in fixing commit messages or fixing PR text (the only issue
+rule), and the case's own comments and review comments dated after the cutoff, taken
+from its collect-time bundle and marked with that bundle's fetch time. Negatives get a
+file with empty fixing lists and their own post-merge comments. Nothing fetchable aborts
+the run: an unfetchable source is listed in `provenance.incomplete` and the command
+exits non-zero if any file is incomplete. Every provider answer is cached under
+`fixes/`, a namespace separate from `prs/` so the collect cache keeps its meaning;
+`--offline` refuses uncached fetches. Case ids are derived as `prospective-export`
+derives them (cutoff = `merged_at` unless `--cutoff`), so file names match bundles. The
+output directory is written atomically and must not pre-exist.
+
+This is oracle-grade material (§7 risks 1 and 2 in their strongest form): it names the
+fix and quotes the discussion of the defect. It is never written under a prospective
+bundle root and is subject to the same access rule as reason labels.
 
 The adjudicated per-case answer is a separate evaluator-only document:
 `schemas/reason-label.schema.json` (`reason-label/v1`) with its closed category list in

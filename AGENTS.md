@@ -195,6 +195,21 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-15: Item 3b, `contamination-keys`. A separate command rather than part of
+  `cohort-export`, because it needs the provider and the mirror while `cohort-export`
+  is offline and deterministic; folding it in would have made `records_sha256` depend
+  on a token. `fixing_shas` keeps the plain-list shape the engine's scanner reads;
+  tier and matching signal live in a sibling field the scanner ignores. Medium-tier
+  fixes are included, flagged, so the scan catches recall of any related fix. Issue
+  threads are limited to issues referenced by `#N` in fixing commit messages and
+  fixing PR text — the only complete source without the timeline API — and that is
+  stated as the rule. Own-PR post-merge discussion comes from the collect-time bundle
+  (the audited source) with its fetch time recorded, not from a live fetch; comments
+  posted after the collect are therefore absent, which for the 2026 collect is moot.
+  Every provider answer is cached under `fixes/`, separate from `prs/`, so the collect
+  cache keeps its meaning and a second run is offline. A source that cannot be
+  fetched is recorded per file rather than failing the run: partial keys with a
+  stated gap beat no keys.
 - 2026-09-15: Item 3a, collector discussion fetch (bundle `1.1.0` -> `1.2.0`).
   Scoping the contamination-keys export found that the collector stored only the
   first page of a PR's conversation comments with the fetch error discarded, and never

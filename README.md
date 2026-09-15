@@ -486,6 +486,33 @@ Rules, all of which fail closed:
   or after that date; every positive case records `earliest_fix_date` (earliest strong
   timestamp, or earliest medium under `any`). Recorded in the manifest as a filter.
 
+**Stage 4 — contamination keys.** For the engine's post-hoc contamination scan, write
+one keys file per case from the cohort:
+
+```bash
+go run ./cmd/miner contamination-keys \
+  --input ./output/frr-2026-cohort-v1/cohort.jsonl \
+  --cache-dir ./data/cache \
+  --git-dir ./data/repos/FRRouting/frr.git \
+  --out ./output/frr-2026-cohort-v1-keys
+```
+
+Each `<out>/<case_id>.json` (`contamination-keys/v1`, `schemas/contamination-keys.schema.json`)
+carries `fixing_shas` (every fixing commit from the record's strong and medium signals, a
+plain sorted list the scanner reads), `fixing_pr_numbers` (resolved by the provider, never
+the case's own PR), `cve_ids` (regex over everything gathered), verbatim `discussion`
+(fixing commit messages, fixing PR titles/bodies/comments/review comments, issues the
+fixes reference by `#N`, and the case's own comments after the cutoff), `fixing_commits`
+(tier and source per SHA, for the evaluator) and `provenance` with an `incomplete` list
+naming every source that could not be established. Negatives get a file with empty
+fixing lists and their own post-merge comments. Every fetch is cached under
+`<cache-dir>/github/<owner>_<repo>/fixes/`, so a second run is offline and reproducible
+(`--offline` refuses uncached fetches). Case ids match the bundles. The command exits
+non-zero if any file is incomplete.
+
+**This output is oracle-grade.** It names the fix and quotes the discussion of the
+defect: never under a prospective bundle root, never to a reviewer or either coder role.
+
 The output is evaluator-facing: it embeds retrospective evidence and must never be given
 to a reviewer or wired into an engine-visible path. To build bundles for the cohort, feed
 the PR numbers from the manifest to `cohort-verify --prs` against the same candidates
