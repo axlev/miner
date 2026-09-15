@@ -121,6 +121,12 @@ type Result struct {
 	Detail      []Subsystem `json:"detail"`
 	Defects     []Defect    `json:"defects"`
 	WalkCommits int         `json:"walk_commits"`
+	// ScoredSubsystems is how many subsystems cleared min_commits and were ranked;
+	// Tercile3Count how many of them landed in the top tercile. When the latter is
+	// 0 (ties at the top), H could not have said RISKY for any subsystem of this
+	// case, and an aggregate reader needs to see that per case.
+	ScoredSubsystems int `json:"scored_subsystems"`
+	Tercile3Count    int `json:"tercile3_count"`
 }
 
 // Case is the subset of a cohort case the baseline reads: identity, cutoff, the
@@ -291,7 +297,11 @@ func Build(ctx context.Context, repo *gitx.Repository, c Case, opt Options) (*Re
 	}
 	for _, s := range active {
 		s.Tercile = tercile(scores, *s.Score)
+		if s.Tercile == 3 {
+			r.Tercile3Count++
+		}
 	}
+	r.ScoredSubsystems = len(active)
 	for _, s := range feats {
 		r.Detail = append(r.Detail, *s)
 	}

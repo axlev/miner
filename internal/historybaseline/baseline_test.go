@@ -153,6 +153,11 @@ func TestBaselineFeaturesAndVerdict(t *testing.T) {
 	if r.WalkCommits != 25+22+5 {
 		t.Errorf("walk_commits = %d, want 52 (no pre-window, no post-cutoff)", r.WalkCommits)
 	}
+	// Two scored subsystems, and with two the top one sits at p = 1/2: no tercile 3,
+	// which the case must say about itself.
+	if r.ScoredSubsystems != 2 || r.Tercile3Count != 0 {
+		t.Errorf("scored_subsystems=%d tercile3_count=%d, want 2/0", r.ScoredSubsystems, r.Tercile3Count)
+	}
 }
 
 func TestBaselineTopTercileIsRiskyWithThreeActiveSubsystems(t *testing.T) {
@@ -180,6 +185,9 @@ func TestBaselineTopTercileIsRiskyWithThreeActiveSubsystems(t *testing.T) {
 		}
 		if r.Risky == nil || *r.Risky != tc.risky || r.Tercile != tc.tercile {
 			t.Errorf("%s: risky %v tercile %d (detail %+v)", tc.path, r.Risky, r.Tercile, r.Detail)
+		}
+		if r.ScoredSubsystems != 3 || r.Tercile3Count != 1 {
+			t.Errorf("%s: scored_subsystems=%d tercile3_count=%d, want 3/1", tc.path, r.ScoredSubsystems, r.Tercile3Count)
 		}
 	}
 }

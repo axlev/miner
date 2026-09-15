@@ -48,6 +48,8 @@
     "touched": { "type": "array", "items": { "type": "object" } },
     "detail": { "type": "array", "items": { "type": "object", "required": ["name", "commits", "churn_lines", "defects", "density", "score"] } },
     "defects": { "type": "array", "items": { "type": "object", "required": ["sha", "subsystem", "attributed_by"] } },
-    "walk_commits": { "type": "integer" }
+    "walk_commits": { "type": "integer" },
+    "scored_subsystems": { "type": "integer", "description": "Subsystems with commits >= min_commits that were ranked." },
+    "tercile3_count": { "type": "integer", "description": "How many scored subsystems landed in tercile 3; 0 means H could not say RISKY for any subsystem of this case." }
   }
 }
