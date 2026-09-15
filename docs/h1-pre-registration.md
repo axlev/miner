@@ -76,6 +76,35 @@ days. One consequence: a negative's evidence-free interval is its full
 `exposure_days`, which is emitted per record, so the evaluator can stratify on
 the actual length rather than assume 180.
 
+**2026-09-15 — a zero-signal record is a negative only if its correlate run
+recorded no swallowed diff failures.** The miner's fitness review established
+(and citation verification confirmed) that the silent failure in correlation is
+not a missing Git handle — that aborts — but `CommitDiff`'s four 15-second
+subprocess timeouts (`internal/gitx/repo.go`, `limits.go`), which `getSummary`
+(`internal/correlator/correlator.go:275-282`) swallows. Under load a record can
+lose weak and medium signals with only a strong hit leaving a trace. So
+"zero signals at every tier" is necessary but not sufficient for `CLEAN`: it
+can be a load artifact. **No cohort may be frozen until per-record diff-failure
+accounting exists** (miner migration item 1) and every negative shows zero
+swallowed failures. The history baseline (b) consumes the same correlate
+output and inherits the same precondition.
+
+**2026-09-15 — "review-time information" has been narrower than assumed, and
+the admission rule is now a pre-cohort decision.** On the ten pilot bundles,
+**1 of 10 `reviewer/metadata.json` files carries a description and 1 of 10
+carries a title**; all 10 carry commit messages. Nine of ten bundles gave every
+arm exactly the diff, the snapshot, and the PR's commit messages. Cause: with
+cutoff = `merged_at`, any post-merge comment or label bumps `updated_at` past
+the cutoff and the description is dropped (`prospectiveexport/export.go:201,
+217`); the title is dropped too unless `IssueEventsComplete` is true
+(`:278-280`). Consequences: every pilot result was produced under this
+condition and should be read that way; and H1's phrase "given only
+review-time information" is currently defined by an admission rule nobody
+chose. **The reviewer-metadata/v2 decision — whether and how to admit
+pre-cutoff title and body — is made before the H1 cohort freezes, not after,
+and whichever way it goes, the per-case admission outcome is recorded in the
+cohort manifest so arms can be stratified on it.**
+
 ## Arms
 
 | arm | what it is | LLM | domain content |
