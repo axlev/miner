@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -127,6 +128,18 @@ func (c *Collector) CollectMinedPRs(ctx context.Context, opts CollectOptions, cf
 
 	for i, prNum := range targetPRNumbers {
 		bundle, err := c.getOrFetchPR(ctx, opts.Owner, opts.Repo, prNum)
+		// A primary or secondary rate limit is a pause, not a missing PR: skipping
+		// here silently truncated a 1,501-PR window to 1,229 on 2026-09-15. Wait for
+		// the reset the provider names, then try the same PR once more.
+		if wait, ok := rateLimitWait(err); ok {
+			fmt.Printf("Rate limit reached at PR #%d; sleeping %s until the reset before retrying.\n", prNum, wait.Round(time.Second))
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			bundle, err = c.getOrFetchPR(ctx, opts.Owner, opts.Repo, prNum)
+		}
 		if err != nil {
 			fmt.Printf("Warning: error getting PR #%d: %v (skipping)\n", prNum, err)
 			continue
@@ -261,4 +274,27 @@ func (c *Collector) buildOriginalPR(ctx context.Context, owner, repo string, bun
 		CommitCount:              pr.GetCommits(),
 		CommitMessages:           commitMsgs,
 	}
+}
+
+// rateLimitWait reports whether err is a provider rate limit and how long to wait
+// for it to lift: until the reset the primary limit names, or the Retry-After of a
+// secondary (abuse) limit, plus a small margin. Any other error is not a wait.
+func rateLimitWait(err error) (time.Duration, bool) {
+	const margin = 5 * time.Second
+	var rl *github.RateLimitError
+	if errors.As(err, &rl) {
+		wait := time.Until(rl.Rate.Reset.Time) + margin
+		if wait < margin {
+			wait = margin
+		}
+		return wait, true
+	}
+	var abuse *github.AbuseRateLimitError
+	if errors.As(err, &abuse) {
+		if abuse.RetryAfter != nil && *abuse.RetryAfter > 0 {
+			return *abuse.RetryAfter + margin, true
+		}
+		return time.Minute, true
+	}
+	return 0, false
 }

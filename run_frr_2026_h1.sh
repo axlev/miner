@@ -125,8 +125,17 @@ print("pairs by subsystem", dict(sorted(by.items())))
 PY
 
 echo "Pipeline finished: $(date -u --iso-8601=seconds)"
-echo "Next, evaluator-side: read the positives (docs/h1-fitness-review-miner.md M4), then"
-echo "  cohort-export ... --positives <list> --name $COHORT_NAME --out $OUTPUT/$COHORT_NAME"
-echo "  cohort-verify --input $CANDIDATES --repo $MIRROR --cache-dir $RUN_ROOT/cache --prs <all 40> --out $OUTPUT/$COHORT_NAME-bundles --bench-repo <engine-runner>"
-echo "  contamination-keys --input $OUTPUT/$COHORT_NAME/cohort.jsonl --cache-dir $RUN_ROOT/cache --git-dir $MIRROR --out $OUTPUT/$COHORT_NAME-keys"
-echo "  history-baseline --input $OUTPUT/$COHORT_NAME/cohort.jsonl --git-dir $MIRROR --out $OUTPUT/$COHORT_NAME-history"
+cat <<EOT
+Next, evaluator-side (exact commands, also in $RUN_ROOT/evaluator/COMMANDS.md):
+  1. Read the positives (docs/h1-fitness-review-miner.md M4); write accepted PR numbers one per line to $RUN_ROOT/evaluator/positives.txt
+  2. Freeze:
+     ./bin/miner cohort-export --input $CANDIDATES --cache-dir $RUN_ROOT/cache --name $COHORT_NAME --positive-signals strong --min-score 0 --min-exposure-days 0 --min-fix-date $MIN_FIX_DATE --positives "\$(grep -vE '^\s*(#|\$)' $RUN_ROOT/evaluator/positives.txt | paste -sd,)" --out $RUN_ROOT/evaluator/$COHORT_NAME
+  3. Verify (engine from a clean clone of a named commit, never the engine checkout):
+     ./bin/miner cohort-verify --input $CANDIDATES --repo $MIRROR --cache-dir $RUN_ROOT/cache --prs "\$(python3 -c "import json; m=json.load(open('$RUN_ROOT/evaluator/$COHORT_NAME/cohort-manifest.json')); print(','.join(str(n) for p in m['pairs'] for n in (p['positive'], p['negative'])))")" --metadata-version v2 --out $RUN_ROOT/evaluator/$COHORT_NAME-bundles --bench-repo <clean clone of engine-runner at the agreed SHA>
+  4. Publish for engine-coder (copy, never symlink; bundles only):
+     rsync -a --exclude='case-*-evaluator-only/' --include='case-*/' --include='case-*/**' --exclude='*' $RUN_ROOT/evaluator/$COHORT_NAME-bundles/ /home/alex/repos/miner/output/frr-h1-cohort/
+  5. Keys (oracle-grade):
+     ./bin/miner contamination-keys --input $RUN_ROOT/evaluator/$COHORT_NAME/cohort.jsonl --cache-dir $RUN_ROOT/cache --git-dir $MIRROR --out $RUN_ROOT/evaluator/$COHORT_NAME-keys
+  6. Arm H:
+     ./bin/miner history-baseline --input $RUN_ROOT/evaluator/$COHORT_NAME/cohort.jsonl --git-dir $MIRROR --out $RUN_ROOT/evaluator/$COHORT_NAME-history
+EOT

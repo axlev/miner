@@ -195,6 +195,21 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-16: First H1 data run (FRRouting/frr, merges 2026-01-01..2026-06-30, 1,501
+  PRs, run root `/home/alex/data/FRR2026H1`). The collector hit GitHub's hourly
+  limit at 1,229 PRs and *skipped* the rest instead of waiting, so the pipeline ran on
+  into correlate over a partial window twice before the cause was clear; both runs
+  were stopped before any batch completed and restarted cache-first after the real
+  reset (read from the rate_limit endpoint, not from the error text, whose reset
+  time proved stale). Fixed in the collector: a primary or secondary rate limit now
+  sleeps until the provider's reset and retries the same PR once. Yield of the
+  provisional cohort under the frozen arguments: 16 strong-signal PRs, 7 after the
+  2026-06-01 fix-date gate, 3 matched pairs, 4 unmatched for want of a same-cell
+  negative — below the pre-registered 16/16; not widened, taken to alex. Two
+  findings recorded for the pre-registration: arm H cannot discriminate inside a
+  subsystem-matched pair (its verdict is a subsystem property, so positive and
+  negative get the same one), and the medium tier holds 244 candidates past the
+  fix-date gate if the tier decision changes.
 - 2026-09-15: Arm H (`history-baseline`) is built in the miner, per alex. Two
   helpers were exported rather than duplicated so H and the rest of the pipeline
   cannot drift: `cohort.SubsystemOfPaths` (the sampler's matching key) and
