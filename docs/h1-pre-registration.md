@@ -62,6 +62,20 @@ collect, where it happens, is for **scale**, not for contamination.
 cases, and the statistical ceiling of that size is stated rather than hidden.**
 See *Thresholds*.
 
+**2026-09-15 — the exposure floor is a policy value, not a correlator window
+(miner, from the code).** *Exposure guard* above says the correlator windows are
+180 days (function) and 90 days (file). The code does not have a 180-day window:
+`CorrelatePR` (`internal/correlator/correlator.go`) searches every post-merge
+commit up to `observation_end` for strong and medium signals, and only the weak
+`SAME_FILE_MODIFICATION` check is bounded, at 90 days; the 180-day function
+window is in `PLAN.md` only and was never implemented. The requirement stands
+unchanged — 180 days is kept as the pre-registered minimum exposure and is the
+default of `cohort-export --min-exposure-days` — but its justification is that a
+short search is a weak CLEAN label, not that the search is truncated at 180
+days. One consequence: a negative's evidence-free interval is its full
+`exposure_days`, which is emitted per record, so the evaluator can stratify on
+the actual length rather than assume 180.
+
 ## Arms
 
 | arm | what it is | LLM | domain content |
@@ -125,9 +139,12 @@ recall are undefined without negatives.
 - Implemented as a **first-class export mode**, not an inverted filter.
 
 **Exposure guard.** `CLEAN` means "no corrective evidence found by
-`observation_end`". The correlator windows are 180 days (function overlap) and
-90 days (file overlap), so a PR merged inside 180 days of `observation_end` has
-a truncated search and a weak label. Two requirements, same code path as the
+`observation_end`". A PR merged shortly before `observation_end` has had little
+time for corrective evidence to appear, so its `CLEAN` label is weak. The
+correlator itself searches every post-merge commit up to `observation_end` for
+strong and medium signals and bounds only the weak file-overlap check, at 90
+days — see the 2026-09-15 decision above; the 180-day figure is a
+pre-registered policy floor, not a search window. Two requirements, same code path as the
 negative sampler: **exclude** PRs merged inside the longest window of
 `observation_end`, and **record exposure days per record** so the evaluator can
 stratify or drop. `ObservationEnd` currently sits in `Provenance`; per-PR

@@ -211,6 +211,28 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-15: Built the H1 negative-control sampler as a new command, `cohort-export`
+  (`internal/cohort/export.go`), rather than as flags on `export`, because every
+  existing export path selects *for* corrective evidence and an inverted filter would
+  still be one. Negatives require zero signals at every tier; matching is 1:1 on
+  category, subsystem, and size band; the exposure floor applies to *both* classes so
+  merge date cannot predict the label. The output wraps the unmodified pipeline record
+  in a `cohort-case/v1` line instead of adding fields to `PRCandidateRecord`, so the
+  `1.0.0` record schema and every existing reader are untouched — the cohort is a new
+  artifact with its own version. Two premises in the dispatch were checked against the
+  code and found wrong, and are recorded in `docs/export-contract.md` §3: there is no
+  180-day correlator window (strong/medium are searched to `observation_end`; only the
+  weak file check is 90-day-bounded), and `--require-signals`/`--min-stateful-score`
+  do not exist (`--require-fix-signal` is OR). The 180-day floor is kept as the
+  pre-registered policy value, defaulted in code, not as a code-derived window.
+- 2026-09-15: The reason-label schema (`schemas/reason-label.schema.json`,
+  `schemas/reason-label-categories.schema.json`) is evaluator-only by construction and
+  the miner never populates it. `verdict` is deliberately distinct from the cohort's
+  `sampler_label`: the sampler applies a rule over raw signals, the adjudicator reads
+  the evidence, and a disagreement is a finding about the sampler to be recorded, not
+  reconciled. The category list is a separate append-only document because the
+  pre-registration says it is built during the first ten labels, so a schema that
+  enumerated values would be designing it up front.
 - 2026-09-10: Two corrections from `coder-engine-runner` over the new direct session
   channel. (a) A run stopping at `reasoner-1` is the *expected and correct* result of
   `cohort-verify`, not a shortfall: `bench` defaults to the deterministic fixture adapter,

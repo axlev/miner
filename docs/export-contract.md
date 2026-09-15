@@ -54,6 +54,9 @@ The implemented workflow is:
      subsystem, with a read-only export precheck. Evaluator-facing.
    - `cohort-verify` exports a shortlist for real and submits each bundle to
      `engine-runner`'s own boundary validator, so no case enters a cohort on a prediction.
+   - `cohort-export` (2026-09-15) samples zero-signal negatives matched 1:1 to positives
+     with an exposure floor, and writes the cohort plus a manifest that identifies it as
+     one object. Evaluator-facing.
 10. `inspect` and `stats`
    - Produce console reports and do not write files themselves.
 
@@ -77,6 +80,7 @@ Registered commands:
 - `prospective-export`
 - `cohort-report`
 - `cohort-verify`
+- `cohort-export` (added 2026-09-15)
 
 Important internal packages:
 
@@ -92,7 +96,7 @@ Important internal packages:
 | `internal/batchstore` | Immutable correlation checkpoint files and manifests |
 | `internal/prospectiveexport` | Reviewer-facing metadata allowlist, temporal validation, and engine-ingestible bundle assembly |
 | `internal/retrospectiveexport` | Evaluator/adjudication evidence materialization |
-| `internal/cohort` | Evaluator-facing cohort selection reports and shortlist verification |
+| `internal/cohort` | Evaluator-facing cohort selection reports, shortlist verification, and the matched-cohort sampler |
 
 All Go packages are under `internal`, so the supported cross-repository boundary is currently files/JSON rather than a Go import API.
 
@@ -127,6 +131,10 @@ score:
 export:
   output/benchmark_candidates.jsonl
   or a caller-selected JSONL, Markdown, or CSV path
+
+cohort-export:
+  <out>/cohort.jsonl                          cohort-case/v1 lines
+  <out>/cohort-manifest.json                  cohort-manifest/v1
 
 inspect and stats:
   stdout only
@@ -288,6 +296,51 @@ never assumes a sibling checkout exists.
 Both outputs are evaluator-facing and legitimately carry retrospective signal counts and
 ranking (§7 risk 2). Neither is ever written into a prospective bundle.
 
+### Cohort export (H1 negative-control sampler)
+
+**Added 2026-09-15** for `docs/h1-pre-registration.md`. `cohort-export`
+(`internal/cohort/export.go`) is a first-class export mode, not a filter over `export`:
+it samples negatives from records with zero corrective signals at every tier (strong,
+medium, weak, no commit relationships, zero rank score), matches each 1:1 to a positive
+on `stateful.category`, subsystem, and a coarse changed-lines band, applies an exposure
+floor (`observation_end - merged_at`, default 180 days) to both classes, and writes:
+
+- `cohort.jsonl` — `cohort-case/v1`: `sampler_label`, `pair_id`, `matched_pr`,
+  `exposure_days`, `changed_lines`, `cell`, `record_sha256`, and the unmodified
+  `PRCandidateRecord` under `record`. The pipeline record schema (`1.0.0`) is untouched;
+  the wrapper is a new artifact with its own version.
+- `cohort-manifest.json` — `cohort-manifest/v1`: the cohort as one object. Record counts;
+  `records_sha256` (SHA-256 over the sorted per-record content hashes); `config_hash`,
+  `miner_version`, `target_repo_head_sha`, `observation_end`, which must be identical
+  across every selected record or the export is refused; the exporter's own build; the
+  input file's hash; every filter argument (`min_score`, `positive_signals`,
+  `min_exposure_days`, `positives`); the matching policy in prose; the pair list; and
+  exclusion counts by reason. Filter arguments are in the manifest because two exports
+  over one candidates file select different cohorts with identical per-record provenance.
+
+The directory is written under a temporary name and renamed into place; `--out` must not
+already exist. Ordering is deterministic under input permutation (tests in
+`internal/cohort/export_test.go`). Both files are evaluator-facing (§7 risks 1 and 2
+apply in full: `record` carries retrospective evidence and `sampler_label` is derived
+from it) and are never an engine input; the engine continues to receive only bundles
+from `prospective-export`.
+
+Two facts about the sampler's premises, established from the code on 2026-09-15:
+
+- The 180-day figure is the pre-registered exposure floor, not a correlator window.
+  `CorrelatePR` (`internal/correlator/correlator.go`) searches every post-merge commit
+  up to `observation_end` for strong and medium signals; only the weak
+  `SAME_FILE_MODIFICATION` check is bounded, at 90 days. `PLAN.md` §"Step 4" describes
+  a 180-day function window that was never implemented.
+- `export --require-fix-signal` is OR over strong and medium (`HasAnyFixSignal`,
+  `internal/model/candidate.go`). The `--require-signals strong,medium` and
+  `--min-stateful-score` flags exist only in `PLAN.md`.
+
+The adjudicated per-case answer is a separate evaluator-only document:
+`schemas/reason-label.schema.json` (`reason-label/v1`) with its closed category list in
+`schemas/reason-label-categories.schema.json`. The miner defines both and populates
+neither; no adjudicated field exists in `internal/model/`.
+
 ### Full repository run script
 
 `run_frr_2024.sh` additionally creates:
@@ -345,7 +398,7 @@ The raw original diff is used during collection/correlation but is not serialize
 
 | Field | Meaning |
 | --- | --- |
-| `score` | Heuristic points capped by configured `max_cap` |
+| `score` | Heuristic points capped by configured `max_cap` (default 1.0). **Not normalised**: it is the raw sum of matched rule weights, clamped. `category` is `HIGH` at or above `high_threshold` (default 0.60), `MEDIUM` at or above `medium_threshold` (default 0.30), else `LOW` (`internal/heuristics/engine.go`; defaults in `internal/config/config.go`). Cohort-defining via `--min-score`, so any change to this is a new version of the record, not an edit. |
 | `raw_points` | Uncapped heuristic points |
 | `category` | `HIGH`, `MEDIUM`, or `LOW` |
 | `matched_path_rules` | Triggered path rules |

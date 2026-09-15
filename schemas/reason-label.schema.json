@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miner.local/schemas/reason-label.schema.json",
+  "title": "Adjudicated reason label (evaluator-only)",
+  "description": "One adjudicated answer for one cohort case: the defect mechanism the later fix actually repaired, or the finding that there was none. This is oracle material under system-design.md §13 — it must never reach a reviewer, an engine-visible path, or either coder role (coder-miner, coder-engine-runner). The miner defines this schema and never populates it: `RetrospectiveEvidence` in a cohort record is raw signals, which are input to adjudication, not the adjudicated answer (docs/h1-pre-registration.md, 'Oracle and reason label'). One JSON object per case; a labelled cohort is a JSONL of these next to the cohort it labels, never inside it. Fields the pre-registration names as the minimum are required; the rest are optional and exist so a judge can trace the label back to the evidence it rests on.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repository",
+    "pr",
+    "cohort_records_sha256",
+    "verdict",
+    "subsystem",
+    "adjudicator",
+    "adjudicated_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "reason-label/v1" },
+    "repository": { "type": "string", "description": "owner/repo, copied from the cohort case." },
+    "pr": { "type": "integer", "minimum": 1, "description": "Original PR number, copied from the cohort case." },
+    "cohort_records_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "records_sha256 of the cohort manifest this label belongs to. A label is only meaningful against the exact record set it was adjudicated on; re-sampling the cohort invalidates the binding."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["RISKY", "CLEAN"],
+      "description": "The adjudicated class. It may disagree with the cohort case's sampler_label — the sampler applies a rule over raw signals, the adjudicator reads the evidence — and a disagreement is a finding about the sampler, recorded in `notes`, not silently reconciled."
+    },
+    "mechanism": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Free text: the defect mechanism the later fix repaired, stated at the level a reviewer's stated reason is matched against (docs/h1-pre-registration.md, 'reason match'). Required when verdict is RISKY; absent when CLEAN."
+    },
+    "subsystem": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exactly one subsystem tag. Defaults to the cohort case's cell.subsystem; the adjudicator may override it when the dominant changed path is not where the defect lives."
+    },
+    "category": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exactly one invariant-or-mechanism category, by `id`, from the closed list in the sibling categories document (schemas/reason-label-categories.schema.json). The list is built while labelling the first ten cases, not designed up front, so this schema does not enumerate values; the categories document is the authority, and a label whose category is not in it is invalid. Required when verdict is RISKY."
+    },
+    "system_level_escape": {
+      "type": "boolean",
+      "description": "Whether the escape surfaced past review and CI — in system test, warm-restart/upgrade, scale, interop, or the field — as opposed to a lint-class defect. Positives in H1 are meant to be system-level; a RISKY case marked false here is a selection finding."
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "source_ref values (commit SHAs, PR or issue numbers) from the case's RetrospectiveEvidence that the adjudicator relied on. Provenance for the label, not a substitute for `mechanism`."
+    },
+    "adjudicator": { "type": "string", "minLength": 1, "description": "Who adjudicated. A person or a named judge configuration; never a reviewer arm." },
+    "adjudicated_at": { "type": "string", "format": "date", "description": "Calendar date of adjudication (YYYY-MM-DD)." },
+    "notes": { "type": "string", "description": "Free text: uncertainty, sampler disagreement, or why a category was added to the closed list on this case." }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "verdict": { "const": "RISKY" } } },
+      "then": { "required": ["mechanism", "category"] }
+    },
+    {
+      "if": { "properties": { "verdict": { "const": "CLEAN" } } },
+      "then": { "not": { "anyOf": [{ "required": ["mechanism"] }, { "required": ["category"] }] } }
+    }
+  ]
+}

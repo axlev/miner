@@ -167,6 +167,21 @@ go run ./cmd/miner export \
   --out ./output/frr_2024_benchmark_candidates.jsonl
 ```
 
+Two things about these filters that decide what a cohort is:
+
+- `--require-fix-signal` is **OR**: a record passes with at least one strong *or* at least
+  one medium signal (`HasAnyFixSignal`, `internal/model/candidate.go`). `--require-strong-fix`
+  is strong-only. There is no `--require-signals strong,medium` flag and no
+  `--min-stateful-score` flag; both appear only in `PLAN.md`, which is design rationale,
+  not the CLI.
+- `--min-score` compares against `stateful.score`, which is **not** normalised: it is the
+  sum of matched rule weights, capped at the configured `max_cap` (default 1.0), and
+  `category` is `HIGH` at or above `high_threshold` (default 0.60), `MEDIUM` at or above
+  `medium_threshold` (default 0.30), else `LOW` (`internal/heuristics/engine.go`,
+  `internal/config/config.go`). Two runs with different `--min-score` values select
+  different cohorts with identical per-record provenance; `cohort-export` records the
+  value in its manifest for exactly this reason.
+
 #### Export Retrospective Evidence for Adjudication
 
 Materialize every retrospective signal, commit relationship, candidate commit, and
@@ -333,6 +348,64 @@ side, not a rename here.
 
 The frozen pilot cohort, its selection rationale, and the provenance needed to rebuild
 the identical bundles are recorded in `docs/frr-pilot-v1-cohort.md`.
+
+**Stage 3 — sample a matched cohort (H1).** `cohort-report` and `cohort-verify` choose
+and prove positives. Every other export path also selects *for* corrective evidence, so
+a cohort built from them alone is structurally all-RISKY and an arm that says "risky" to
+everything scores perfectly. `cohort-export` is the first-class negative-control sampler
+described in `docs/h1-pre-registration.md`:
+
+```bash
+go run ./cmd/miner cohort-export \
+  --input ./data/candidates.jsonl \
+  --name frr-2026-cohort-v1 \
+  --positive-signals strong \
+  --min-exposure-days 180 \
+  --positives 15624,15701,15733 \
+  --out ./output/frr-2026-cohort-v1
+```
+
+It writes two files into a new directory, atomically (`--out` must not exist):
+
+- `cohort.jsonl` — one `cohort-case/v1` line per case: `sampler_label` (`RISKY` or
+  `CLEAN`), `pair_id`, `matched_pr`, `exposure_days`, `changed_lines`, the matching
+  `cell`, `record_sha256`, and the unmodified pipeline record under `record`.
+- `cohort-manifest.json` — one `cohort-manifest/v1` object identifying the cohort:
+  record counts, `records_sha256` (SHA-256 over the sorted per-record hashes), the
+  `config_hash` / `miner_version` / `target_repo_head_sha` / `observation_end` shared by
+  every record (non-uniform provenance is refused), the exporter's own build, the input
+  file's hash, every filter argument, the matching policy, the pair list, and exclusion
+  counts by reason.
+
+Rules, all of which fail closed:
+
+- **Negatives** have zero signals at every tier — strong, medium *and* weak — plus no
+  commit relationships and a zero rank score. Weak-only or medium-only records are
+  neither class and are counted as `partial_evidence`.
+- **Matching is 1:1** on `stateful.category`, subsystem (the same grouping
+  `cohort-report` uses), and a coarse changed-lines band (`0`, `1-10`, `11-50`,
+  `51-200`, `201-1000`, `1001+`). Assignment is deterministic: positives in ascending PR
+  order, each taking the unused same-cell negative with the nearest score, then nearest
+  size, then lowest PR. A positive with no same-cell negative is dropped and listed under
+  `unmatched_positives`; a positive named in `--positives` that cannot be matched, does
+  not qualify, or is missing from the input fails the export instead.
+- **Exposure guard.** `exposure_days` is `observation_end - merged_at`, and both classes
+  must reach `--min-exposure-days` (default 180, the pre-registered value). A record
+  without both timestamps has no exposure and is excluded. The floor applies to both
+  classes because a floor on negatives alone would let merge date predict the label.
+  Note that 180 days is a policy floor, not a correlator window: strong and medium
+  signals are searched over the whole interval up to `observation_end`, and only the
+  weak same-file check is bounded (90 days).
+- `--min-score` applies to both classes; `--positive-signals` is `strong` (default) or
+  `any` (strong OR medium, the same rule as `export --require-fix-signal`).
+
+The output is evaluator-facing: it embeds retrospective evidence and must never be given
+to a reviewer or wired into an engine-visible path. To build bundles for the cohort, feed
+the PR numbers from the manifest to `cohort-verify --prs` against the same candidates
+file. The adjudicated answer per case is a separate, evaluator-only document —
+`schemas/reason-label.schema.json`, with its closed category list in
+`schemas/reason-label-categories.schema.json` — which the miner defines and never
+populates.
 
 ---
 

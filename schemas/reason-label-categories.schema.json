@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miner.local/schemas/reason-label-categories.schema.json",
+  "title": "Closed category list for reason labels (evaluator-only)",
+  "description": "The closed list of invariant-or-mechanism categories that `category` in a reason label (schemas/reason-label.schema.json) must be drawn from. Per docs/h1-pre-registration.md the list is built while labelling the first ten cases, not designed up front, so this document starts empty and grows only by appending: an entry records which case forced it. Once labelling passes the first ten cases the list is frozen; adding a category after that is a dated decision, and relabelling under the new list produces a new list version. Evaluator-only, same access rule as the labels it governs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "cohort_records_sha256", "frozen", "categories"],
+  "properties": {
+    "schema_version": { "const": "reason-label-categories/v1" },
+    "cohort_records_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "records_sha256 of the cohort manifest the list was built against."
+    },
+    "frozen": {
+      "type": "boolean",
+      "description": "False while the first ten cases are being labelled; true afterwards. Labels adjudicated against an unfrozen list must be re-checked once it freezes."
+    },
+    "frozen_at": { "type": "string", "format": "date" },
+    "categories": {
+      "type": "array",
+      "description": "Append-only; order is the order categories were needed. `id` values are unique.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "definition", "introduced_by_pr", "introduced_at"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$", "description": "Stable identifier used by reason labels, e.g. init-order, error-path, config-interaction." },
+          "definition": { "type": "string", "minLength": 1, "description": "What a case must exhibit to be filed here, written so a second adjudicator would file the same case the same way." },
+          "introduced_by_pr": { "type": "integer", "minimum": 1, "description": "The case whose labelling required this category." },
+          "introduced_at": { "type": "string", "format": "date" },
+          "diff_predictable": {
+            "type": "string",
+            "enum": ["expected", "not_expected", "unknown"],
+            "description": "The pre-registration's prior for this class: whether a review-time reader is expected to be able to see it in the diff. Recorded so recall can be reported by failure class against the stated expectation."
+          }
+        }
+      }
+    }
+  }
+}
