@@ -17,8 +17,9 @@ set. Status terms are `AGENTS.md` "Status vocabulary".
 | — | Partial re-correlate run on the real candidates file | **Not started** — evaluator-side; needs real data access this role does not have | see "What the run looks like" |
 
 "Verified": `go vet ./...` and `go test ./...` pass on every package in this session, and
-`merge-correlated` was run end to end on synthetic input. Nothing is Shipped until the
-commit is confirmed; nothing is Integrated (no real record has been re-correlated).
+`merge-correlated` was run end to end on synthetic input. Points 1–5 are **Shipped** as
+`df9f619` on `main`; nothing is Integrated (no real record has been correlated by the
+new build yet).
 
 ## Version impact
 
@@ -63,11 +64,17 @@ carries.
   no `changed_paths` (`correlator.go`, `makeSignal`). That is why the widened
   re-correlate set includes such positives: the class is right, the M4 inputs are not.
 - **Old records are not retroactively countable.** A record without `correlated_by`
-  cannot be a negative; the only remedy is re-correlation. The existing FRR candidates
-  file has none, so no H1 negative can be drawn from it until the run above happens.
+  cannot be a negative; the only remedy is re-correlation. The existing 2024 FRR
+  candidates file has none. This is **not on H1's critical path**: the H1 cohort is a
+  fresh 2026 collect (pre-registration §3) whose `correlate` runs on the 1.1.0 build,
+  so every record carries the count from the start. The run recipe above matters only
+  if the pilot cohort is to be rescored under the new rule, which is a separate
+  decision.
 - **`--min-fix-date` records an argument, not a fact about any model.** The
   pre-registration's rule rests on a training-cutoff claim the miner cannot check.
 - **`earliest_fix_date` uses the signal timestamp the correlator stored**, which is the
-  commit's author date (`gitx/repo.go`, `%aI`), not when it landed on a branch. A
-  rebased fix can carry an author date earlier than its merge; the rule is therefore
-  slightly conservative in the wrong direction and should be stated.
+  commit's author date (`gitx/repo.go`, `%aI`), not when it landed on a branch. Author
+  date is never later than commit date, so a fix that passes the `--min-fix-date` gate
+  on author date also passes on landing date: the choice is conservative for validity.
+  Its cost is yield, not correctness — a fix authored in May and landed in June is
+  excluded. State it as a yield cost in the cohort document.
