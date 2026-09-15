@@ -8,12 +8,25 @@ code-review benchmark system described in `repos/engine-runner/docs/system-desig
 This file is the single source of truth for your role, boundaries, and working conventions.
 `CLAUDE.md` in this repo is a one-line import of this file — do not duplicate its content there.
 
+## Current target
+
+The target this repo optimises for is H1 as pre-registered in
+`docs/h1-pre-registration.md`. It supersedes `system-design.md` §15's staged-review
+milestones for everything after 2026-09-15. Read it before planning any work; the
+pre-registration fixes the thresholds, the 40-case 1:1 cohort, and the analysis in
+advance, and a change to any of those is a dated decision in that document, not an
+edit. The miner's part is cohort construction — positives with system-level escapes,
+matched zero-signal negatives, the exposure guard, the cohort manifest, and the
+evaluator-only reason-label schema — not deterministic analysis, which H1 excludes by
+decision.
+
 ## Source of truth, in order
 
 1. **Current source and tests** — the only place "what the miner actually does" is verified.
 2. **`docs/export-contract.md`** — the authoritative record of package boundaries, the pipeline
-   record schema, the export contracts, and the enumerated contamination risks (§7) and
-   recommended-but-unimplemented engine interface (§9–§10). Read it before touching anything
+   record schema, the export contracts, the enumerated contamination risks (§7), and the
+   engine interface as implemented on 2026-09-09 (§9–§10; §10 is a per-item status log,
+   not a to-do list). Read it before touching anything
    under `internal/prospectiveexport`, `internal/retrospectiveexport`, `internal/gitx`, or
    `internal/correlator`, and re-read the relevant section whenever a task touches identity,
    cutoffs, or exported fields.
@@ -38,7 +51,8 @@ notes as a substitute for reading the docs — they drift. Update `docs/export-c
 ## Architecture boundaries (non-negotiable)
 
 - This repo owns discovery, collection, correlation, candidate scoring, human-facing selection
-  reports (including `cohort-report`/`cohort-verify`, `internal/cohort`), and the
+  reports (including `cohort-report`, `cohort-verify`, and the H1 sampler `cohort-export`,
+  all in `internal/cohort`), and the
   prospective/retrospective exports. It does not own or emulate
   `engine-runner` behavior, and you do not work in `repos/engine-runner`.
 - Markdown/CSV/legacy-JSONL candidate reports (`export`) are **evaluator-facing only** — they
@@ -83,36 +97,16 @@ notes as a substitute for reading the docs — they drift. Update `docs/export-c
   deliberately *not* copies and must stay: `buildChecksums`, which produces an artifact
   the engine merely verifies, and `evaluatorArtifactBasenames`, which blocks exact
   `ground_truth.json`-style filenames the engine's in-snapshot heuristic omits on purpose.
-- Fail closed whenever temporal provenance, repository identity, PR identity, or Git object
-  identity is uncertain: omit the field, reject the record, or error out — do not guess, and do
-  not widen a validation check to "make the test pass" without confirming the widening is
-  actually safe against `docs/export-contract.md` §7.
-- Prefer closed schemas, deterministic ordering, immutable outputs, explicit schema versions,
-  canonical patches, and SHA-256 artifact hashes for anything new you add to an export path.
-- **Treat the bundle wire contract as frozen in both directions.** Do not change the
-  `reviewer/` + `control/` layout, the entry names, the pinned schema-version strings, the
-  reviewer metadata field allowlist, or the checksum-manifest semantics unless a new product
-  requirement cannot be implemented without it — not for tidiness, naming, or a nicer shape.
-  If a requirement does force a change, bump the schema version rather than redefining an
-  existing one, and record why in the Decisions log. This binds the miner as much as the
-  engine. The oracle-name heuristic lists are explicitly outside the freeze: the engine's
-  contract says that list is meant to be tuned against real exports, tuning it changes no
-  bundle's structure, and it is warnings-only here — so it may move on either side without
-  being treated as a break.
-- **The boundary rules are mirrored across two repos, and nothing detects drift.**
-  `engine-runner/internal/boundaryvalidator` is authoritative for what the engine accepts.
-  `validateBundle` and its constants in `internal/prospectiveexport/bundle.go`
-  (`reviewerAllowedEntries`, `gitMetadataNames`, `oracleShapedSubstrings`,
-  `snapshotOracleBasenames`, `snapshotOracleSubstrings`) plus the pinned schema-version
-  constants in `export.go` are a hand-maintained copy of those rules, kept so a bad bundle
-  fails at export time rather than downstream. Go forbids importing another module's
-  `internal/` packages, so the copy cannot be replaced by an import and no test can compare
-  the two — verification must shell out to `engine-runner`'s `cmd/bench`. If the engine
-  tightens, adds, or renames a rule and this copy is not updated in the same change, the
-  miner keeps publishing bundles the engine will reject, silently. There is no shared memory
-  between `coder-miner` and `coder-engine-runner` (`system-design.md` §14), so no session
-  will be told: re-read `boundaryvalidator.go` whenever you touch this pairing, and re-verify
-  a real bundle against `cmd/bench` afterwards.
+- **No boundary rule is mirrored here, and that is deliberate (decision 2026-09-10).**
+  `engine-runner/internal/boundaryvalidator` is the only definition of what the engine
+  accepts, and `internal/contextbuilder` the only definition of what reaches a stage.
+  Go forbids importing another module's `internal/` packages and no test can compare
+  two rule tables, which is why a copy was tried for one day and removed. If the engine
+  tightens, adds, or renames a rule, this repo learns of it only by running
+  `miner cohort-verify --bench-repo <engine-runner>` over real bundles; do that after
+  any change on either side. The two things in `bundle.go` that look rule-like are not
+  rules: `buildChecksums` produces an artifact the engine verifies, and
+  `evaluatorArtifactBasenames` closes a gap the engine delegates on purpose.
 - Per the system design's access matrix (§13), you have no production access to raw mined data,
   prospective bundles, oracle bundles, or run results outside this repo — only synthetic
   fixtures and this repo's own source.
@@ -182,8 +176,8 @@ Use exactly these terms; do not substitute "done" or "exists":
 
 - Lead with the outcome and current status.
 - Clearly separate verified facts, recommendations, and unknowns — especially when citing
-  `docs/export-contract.md` §9/§10 or `system-design.md`, both of which describe target/
-  recommended states, not current behavior.
+  `system-design.md`, which describes target architecture, or `PLAN.md`; §9/§10 of
+  `docs/export-contract.md` describe implemented behavior with dated status.
 - Batch safe, related operations instead of asking for permission repeatedly; still ask before
   anything irreversible or shared (Git history, deleting non-gitignored files, network calls
   outside the GitHub collection flow).
@@ -211,6 +205,14 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-15: Applied the `AGENTS.md` corrections from `docs/h1-fitness-review-miner.md`
+  §2: the stale "boundary rules are mirrored" bullet (it named `validateBundle` and five
+  constants deleted on 2026-09-10) was rewritten in favour of that decision, three
+  verbatim duplicate bullets were removed, the two lines calling `docs/export-contract.md`
+  §9–§10 "unimplemented"/"target" were corrected to match the contract's own dated
+  headings, `cohort-export` was added to the owned commands, and a "Current target"
+  section pointing at `docs/h1-pre-registration.md` was added. No boundary rule was
+  removed.
 - 2026-09-15: Built the H1 negative-control sampler as a new command, `cohort-export`
   (`internal/cohort/export.go`), rather than as flags on `export`, because every
   existing export path selects *for* corrective evidence and an inverted filter would
@@ -310,7 +312,7 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
   describing files the snapshot does not have, and nothing downstream re-checks that
   correspondence — the engine only discovers it when a reviewer cites a line that fails
   validation, after that stage has been paid for.
-- 2026-09-09: Split pre-publication bundle validation by whether the engine can waive the rule.
+- 2026-09-09 *(superseded 2026-09-10 by the "Deleted the miner's copy" entry above)*: Split pre-publication bundle validation by whether the engine can waive the rule.
   Layout, irregular files, Git metadata, pinned schema versions, and checksum agreement are
   errors. The lexical oracle-name heuristic inside `reviewer/repository/` is a warning, because
   that vocabulary belongs to the upstream repository and the engine's protocol has a waiver for
