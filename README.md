@@ -87,8 +87,12 @@ go run ./cmd/miner collect \
   --out ./data/raw_prs.jsonl
 ```
 
-Every cache bundle written by this build is `bundle_version` `1.1.0`: besides the PR,
-comments, commits, and issue events, it carries the PR **body's edit history**
+Every cache bundle written by this build is `bundle_version` `1.2.0`. It holds the PR,
+its conversation comments and inline review comments **fetched to completion** with
+`issue_comments_complete` / `review_comments_complete` flags (bundles below 1.2.0 hold
+only the first page of conversation comments, with fetch errors discarded, and no review
+comments; their flags read false), its commits and issue events, and the PR **body's edit
+history**
 (`body_edits`, from GraphQL `userContentEdits`) with its own completeness flag
 `body_edits_complete` and `body_edits_fetched_at`. Title edits stay on the REST
 `renamed` issue events; each field's history has one source. A GraphQL failure (no

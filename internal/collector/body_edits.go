@@ -18,7 +18,13 @@ import (
 // before the cutoff. A bundle without bundle_version predates this: it deserializes
 // with BodyEditsComplete false and no edits, which is the correct reading of it —
 // the history is unknown, not empty.
-const BundleVersion = "1.1.0"
+//
+// 1.2.0 (2026-09-15): additive. The PR's conversation comments are fetched to
+// completion (before, only the first page, with errors discarded) and its inline
+// review comments are fetched at all, each with a completeness flag
+// (IssueCommentsComplete, ReviewCommentsComplete). Bundles below 1.2.0 have both
+// flags false; their comment list may be truncated and must not be read as whole.
+const BundleVersion = "1.2.0"
 
 // DefaultGraphQLURL is GitHub's GraphQL endpoint.
 const DefaultGraphQLURL = "https://api.github.com/graphql"

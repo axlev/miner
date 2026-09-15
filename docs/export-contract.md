@@ -20,10 +20,11 @@ The implemented workflow is:
 
 1. `collect`
    - Searches GitHub for merged PRs in monthly intervals.
-   - Fetches PR details, comments, commits, issue events, and (since 2026-09-15,
-     bundle 1.1.0) the PR body's edit history via GraphQL `userContentEdits` into a
-     local cache, with a per-field completeness flag; a GraphQL failure is recorded,
-     never fatal.
+   - Fetches PR details, commits, issue events, the PR body's edit history via
+     GraphQL `userContentEdits` (bundle 1.1.0), and the PR's conversation and inline
+     review comments paginated to completion (bundle 1.2.0) into a local cache. Every
+     list carries its own completeness flag; a fetch failure discards the partial list,
+     records the flag as false, and is never fatal.
    - Reads base/head/merge identities from the cached GitHub PR response.
    - Uses a local Git repository to compute the merge-base PR diff (`base...head`) and derive changed paths and functions.
    - Writes initial `PRCandidateRecord` JSONL.
@@ -112,7 +113,7 @@ All Go packages are under `internal`, so the supported cross-repository boundary
 
 ```text
 collect:
-  <cache-dir>/github/<owner>_<repo>/prs/pr_<number>.json   bundle_version 1.1.0
+  <cache-dir>/github/<owner>_<repo>/prs/pr_<number>.json   bundle_version 1.2.0
   <git-dir>/                                  bare Git repository
   data/raw_prs.jsonl                          default JSONL output
 

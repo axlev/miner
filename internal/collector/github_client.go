@@ -43,6 +43,44 @@ func NewGitHubClient(token string) *GitHubClient {
 	}
 }
 
+// fetchAllIssueComments pages through the PR's conversation comments. On any page
+// error the partial list is discarded and complete is false, mirroring issue events.
+func (c *GitHubClient) fetchAllIssueComments(ctx context.Context, owner, repo string, prNumber int) ([]*github.IssueComment, bool) {
+	var all []*github.IssueComment
+	opt := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		page, resp, err := c.Client.Issues.ListComments(ctx, owner, repo, prNumber, opt)
+		if err != nil {
+			fmt.Printf("Warning: PR #%d: issue comments not fetched to completion (%v); bundle written with issue_comments_complete=false\n", prNumber, err)
+			return nil, false
+		}
+		all = append(all, page...)
+		if resp == nil || resp.NextPage == 0 {
+			return all, true
+		}
+		opt.Page = resp.NextPage
+	}
+}
+
+// fetchAllReviewComments pages through the PR's inline review comments with the
+// same discipline.
+func (c *GitHubClient) fetchAllReviewComments(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestComment, bool) {
+	var all []*github.PullRequestComment
+	opt := &github.PullRequestListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		page, resp, err := c.Client.PullRequests.ListComments(ctx, owner, repo, prNumber, opt)
+		if err != nil {
+			fmt.Printf("Warning: PR #%d: review comments not fetched to completion (%v); bundle written with review_comments_complete=false\n", prNumber, err)
+			return nil, false
+		}
+		all = append(all, page...)
+		if resp == nil || resp.NextPage == 0 {
+			return all, true
+		}
+		opt.Page = resp.NextPage
+	}
+}
+
 // CheckRateLimit queries current remaining rate limit quota.
 func (c *GitHubClient) CheckRateLimit(ctx context.Context) (*github.Rate, error) {
 	limits, _, err := c.Client.RateLimit.Get(ctx)
@@ -60,12 +98,19 @@ func (c *GitHubClient) CheckRateLimit(ctx context.Context) (*github.Rate, error)
 type RawPRBundle struct {
 	// BundleVersion is BundleVersion at write time; empty on bundles written before
 	// 1.1.0, which therefore have no body-edit history rather than an empty one.
-	BundleVersion  string                       `json:"bundle_version,omitempty"`
-	PR             *github.PullRequest          `json:"pull_request"`
-	IssueComments  []*github.IssueComment       `json:"issue_comments,omitempty"`
-	ReviewComments []*github.PullRequestComment `json:"review_comments,omitempty"`
-	Commits        []*github.RepositoryCommit   `json:"commits,omitempty"`
-	IssueEvents    []*github.IssueEvent         `json:"issue_events,omitempty"`
+	BundleVersion string              `json:"bundle_version,omitempty"`
+	PR            *github.PullRequest `json:"pull_request"`
+	// IssueComments are the PR's conversation comments, every page. Before bundle
+	// 1.2.0 only the first page was stored and a fetch error was discarded, so an
+	// old bundle's list may be truncated: IssueCommentsComplete is false on it.
+	IssueComments         []*github.IssueComment `json:"issue_comments,omitempty"`
+	IssueCommentsComplete bool                   `json:"issue_comments_complete,omitempty"`
+	// ReviewComments are the PR's inline review comments, every page. Never
+	// populated before 1.2.0.
+	ReviewComments         []*github.PullRequestComment `json:"review_comments,omitempty"`
+	ReviewCommentsComplete bool                         `json:"review_comments_complete,omitempty"`
+	Commits                []*github.RepositoryCommit   `json:"commits,omitempty"`
+	IssueEvents            []*github.IssueEvent         `json:"issue_events,omitempty"`
 	// IssueEventsComplete is true only when every issue event page was fetched.
 	IssueEventsComplete bool      `json:"issue_events_complete,omitempty"`
 	FetchedAt           time.Time `json:"fetched_at"`
@@ -91,9 +136,11 @@ func (c *GitHubClient) FetchPRBundle(ctx context.Context, owner, repo string, pr
 		return nil, nil, fmt.Errorf("failed to fetch PR #%d: %w", prNumber, err)
 	}
 
-	// Fetch issue comments
-	opt := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
-	issueComments, _, _ := c.Client.Issues.ListComments(ctx, owner, repo, prNumber, opt)
+	// Discussion is fetched to completion or not at all: the contamination scan
+	// reads these bodies, and a truncated list read as whole would miss exactly the
+	// later comments that describe the outcome.
+	issueComments, issueCommentsComplete := c.fetchAllIssueComments(ctx, owner, repo, prNumber)
+	reviewComments, reviewCommentsComplete := c.fetchAllReviewComments(ctx, owner, repo, prNumber)
 
 	// Fetch commits in PR
 	commitOpt := &github.ListOptions{PerPage: 100}
@@ -119,12 +166,15 @@ func (c *GitHubClient) FetchPRBundle(ctx context.Context, owner, repo string, pr
 	}
 
 	bundle := &RawPRBundle{
-		PR:                  pr,
-		IssueComments:       issueComments,
-		Commits:             commits,
-		IssueEvents:         issueEvents,
-		IssueEventsComplete: eventsComplete,
-		FetchedAt:           time.Now().UTC(),
+		PR:                     pr,
+		IssueComments:          issueComments,
+		IssueCommentsComplete:  issueCommentsComplete,
+		ReviewComments:         reviewComments,
+		ReviewCommentsComplete: reviewCommentsComplete,
+		Commits:                commits,
+		IssueEvents:            issueEvents,
+		IssueEventsComplete:    eventsComplete,
+		FetchedAt:              time.Now().UTC(),
 	}
 	// The body's edit history is the only per-field record of when the description
 	// last changed. A failure here is recorded, never fatal.

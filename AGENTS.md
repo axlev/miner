@@ -195,6 +195,16 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-15: Item 3a, collector discussion fetch (bundle `1.1.0` -> `1.2.0`).
+  Scoping the contamination-keys export found that the collector stored only the
+  first page of a PR's conversation comments with the fetch error discarded, and never
+  populated `review_comments` at all. Both now paginate to completion with their own
+  completeness flags, on the same discipline as issue events and body edits: a
+  partial list is discarded, never stored as whole. Split out of the keys export and
+  landed first because it is a collect-time fetch and the 2026 collect must capture
+  it from the start; the keys command (3b) reads only post-cutoff material and can
+  follow the collect. No refresh path for comments was added; an old cache's comment
+  lists read as incomplete and stay that way until the PR is re-collected.
 - 2026-09-15: reviewer-metadata/v2, export half. A second pinned version string with
   an identical wire shape; only the admission rule for `title` and `description`
   changes, from the PR-level `updated_at` (which any post-merge comment advances and
