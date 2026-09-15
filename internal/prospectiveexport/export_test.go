@@ -129,7 +129,7 @@ func TestStrictValidationRejectsUnknownNestedAndForbidden(t *testing.T) {
 		if i == 2 {
 			forbidden = []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 		}
-		if err := ValidateNormalized(data, cutoff, forbidden); err == nil {
+		if err := ValidateNormalized(data, cutoff, forbidden, MetadataSchemaVersion); err == nil {
 			t.Fatalf("case %d accepted", i)
 		}
 	}

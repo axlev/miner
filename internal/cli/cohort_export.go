@@ -13,9 +13,9 @@ import (
 )
 
 var cohortExportFlags struct {
-	input, out, name, positiveSignals, positives, minFixDate string
-	minScore                                                 float64
-	minExposureDays                                          int
+	input, out, name, positiveSignals, positives, minFixDate, cacheDir string
+	minScore                                                           float64
+	minExposureDays                                                    int
 }
 
 var cohortExportCmd = &cobra.Command{
@@ -91,6 +91,7 @@ arguments is a different cohort.`,
 			MinExposureDays: f.minExposureDays,
 			Positives:       positives,
 			MinFixDate:      minFixDate,
+			CacheDir:        f.cacheDir,
 		}
 		m, err := cohort.Export(records, raw, opt)
 		if err != nil {
@@ -114,6 +115,7 @@ func init() {
 	cohortExportCmd.Flags().Float64Var(&f.minScore, "min-score", 0.0, "Minimum stateful score, applied to both classes")
 	cohortExportCmd.Flags().StringVar(&f.positiveSignals, "positive-signals", "strong", "Evidence tier that qualifies a positive: strong, or any (strong OR medium)")
 	cohortExportCmd.Flags().IntVar(&f.minExposureDays, "min-exposure-days", cohort.DefaultMinExposureDays, "Minimum days between merged_at and observation_end, both classes")
+	cohortExportCmd.Flags().StringVar(&f.cacheDir, "cache-dir", "", "Collect-time cache root; when set, each case records the reviewer-metadata/v2 admission outcome per field")
 	cohortExportCmd.Flags().StringVar(&f.minFixDate, "min-fix-date", "", "Admit a positive only if its earliest corrective signal is on or after this date (YYYY-MM-DD)")
 	cohortExportCmd.Flags().StringVar(&f.positives, "positives", "", "Comma-separated explicit positive shortlist; each must qualify and match, or the export fails")
 	for _, name := range []string{"out", "name"} {

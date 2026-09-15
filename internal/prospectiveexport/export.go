@@ -91,17 +91,25 @@ type FieldDecision struct {
 	ValidAt              string   `json:"valid_at,omitempty"`
 	ReconstructionMethod string   `json:"reconstruction_method,omitempty"`
 	Reason               string   `json:"reason,omitempty"`
+	// Outcome is the v2 admission outcome (admitted / omitted-post-cutoff-edit /
+	// omitted-unverifiable) for title and description; empty under v1 and for
+	// fields that have no per-field history.
+	Outcome string `json:"outcome,omitempty"`
 }
 
 type Audit struct {
-	SchemaVersion     string                   `json:"schema_version"`
-	CaseID            string                   `json:"case_id"`
-	PRNumber          int                      `json:"pr_number"`
-	Cutoff            string                   `json:"cutoff_timestamp"`
-	InputRecordSHA256 string                   `json:"input_record_sha256"`
-	CacheBundleSHA256 string                   `json:"cache_bundle_sha256"`
-	Fields            map[string]FieldDecision `json:"fields"`
-	Validation        string                   `json:"validation"`
+	SchemaVersion     string `json:"schema_version"`
+	CaseID            string `json:"case_id"`
+	PRNumber          int    `json:"pr_number"`
+	Cutoff            string `json:"cutoff_timestamp"`
+	InputRecordSHA256 string `json:"input_record_sha256"`
+	CacheBundleSHA256 string `json:"cache_bundle_sha256"`
+	// MetadataVersion is the reviewer-metadata schema the bundle was built under.
+	MetadataVersion string `json:"metadata_version"`
+	// Admission is the per-field outcome and method for title and description (v2 only).
+	Admission  map[string]FieldAdmission `json:"admission,omitempty"`
+	Fields     map[string]FieldDecision  `json:"fields"`
+	Validation string                    `json:"validation"`
 }
 
 type Options struct {
@@ -115,6 +123,10 @@ type Options struct {
 	// CaseID overrides the auto-generated opaque case identifier. Leave empty to have
 	// Export generate one via GenerateCaseID.
 	CaseID string
+	// MetadataVersion selects the reviewer-metadata contract: MetadataVersionV1 (also
+	// the default when empty, so the pilot path is byte-identical) or
+	// MetadataVersionV2. The CLI defaults to v2.
+	MetadataVersion string
 	// ProspectiveOut and EvaluatorOut are separate, caller-supplied output roots. Keeping
 	// them separate (rather than subdirectories of one shared root) means a consumer that
 	// recursively ingests ProspectiveOut can never traverse into evaluator-only artifacts.
@@ -306,8 +318,9 @@ func reconstructTitle(current string, events []*github.IssueEvent, complete bool
 
 var allowedKeys = map[string]bool{"schema_version": true, "repository": true, "title": true, "description": true, "cutoff_timestamp": true, "base_branch": true, "commit_messages": true}
 
-// ValidateNormalized enforces the closed reviewer schema on serialized bytes.
-func ValidateNormalized(data []byte, cutoff time.Time, forbidden []string) error {
+// ValidateNormalized enforces the closed reviewer schema on serialized bytes,
+// pinned to wantSchema (a reviewer-metadata/v* string).
+func ValidateNormalized(data []byte, cutoff time.Time, forbidden []string, wantSchema string) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var meta Metadata
@@ -330,8 +343,11 @@ func ValidateNormalized(data []byte, cutoff time.Time, forbidden []string) error
 			return fmt.Errorf("nested raw payload rejected in %q", k)
 		}
 	}
-	if meta.SchemaVersion != MetadataSchemaVersion {
-		return fmt.Errorf("reviewer metadata schema_version is %q, want the pinned %q", meta.SchemaVersion, MetadataSchemaVersion)
+	if wantSchema == "" {
+		wantSchema = MetadataSchemaVersion
+	}
+	if meta.SchemaVersion != wantSchema {
+		return fmt.Errorf("reviewer metadata schema_version is %q, want the pinned %q", meta.SchemaVersion, wantSchema)
 	}
 	if meta.Repository == "" || meta.CutoffTimestamp == "" {
 		return fmt.Errorf("repository and cutoff_timestamp are required")
@@ -568,7 +584,17 @@ func Export(ctx context.Context, opt Options) error {
 		return fmt.Errorf("prospective identity validation failed: %w", err)
 	}
 
-	meta, decisions, err := Build(bundle, original.Repository, opt.Cutoff)
+	wantSchema, err := metadataSchemaFor(opt.MetadataVersion)
+	if err != nil {
+		return err
+	}
+	var meta Metadata
+	var decisions map[string]FieldDecision
+	if wantSchema == MetadataSchemaVersionV2 {
+		meta, decisions, err = BuildV2(bundle, original.Repository, opt.Cutoff)
+	} else {
+		meta, decisions, err = Build(bundle, original.Repository, opt.Cutoff)
+	}
 	if err != nil {
 		return err
 	}
@@ -583,7 +609,7 @@ func Export(ctx context.Context, opt Options) error {
 		return err
 	}
 	normalized = append(normalized, '\n')
-	if err := ValidateNormalized(normalized, opt.Cutoff, forbiddenValues(root)); err != nil {
+	if err := ValidateNormalized(normalized, opt.Cutoff, forbiddenValues(root), wantSchema); err != nil {
 		return fmt.Errorf("prospective validation failed: %w", err)
 	}
 
@@ -691,7 +717,10 @@ func Export(ctx context.Context, opt Options) error {
 	if err := os.WriteFile(filepath.Join(evaluatorTmp, "correlated-report.json"), append(append([]byte(nil), raw...), '\n'), 0644); err != nil {
 		return err
 	}
-	audit := Audit{SchemaVersion: SchemaVersion, CaseID: caseID, PRNumber: opt.PR, Cutoff: opt.Cutoff.UTC().Format(time.RFC3339Nano), InputRecordSHA256: digest(raw), CacheBundleSHA256: digest(cacheRaw), Fields: decisions, Validation: "passed"}
+	audit := Audit{SchemaVersion: SchemaVersion, CaseID: caseID, PRNumber: opt.PR, Cutoff: opt.Cutoff.UTC().Format(time.RFC3339Nano), InputRecordSHA256: digest(raw), CacheBundleSHA256: digest(cacheRaw), MetadataVersion: wantSchema, Fields: decisions, Validation: "passed"}
+	if wantSchema == MetadataSchemaVersionV2 {
+		audit.Admission = Admission(bundle, opt.Cutoff.UTC())
+	}
 	ab, err := json.MarshalIndent(audit, "", "  ")
 	if err != nil {
 		return err

@@ -25,7 +25,7 @@ Reported, not pass/fail: case-level recall of RISKY for all three arms, overall 
 
 A failed H1 is then read by failure class to see whether a narrower hypothesis survives; that reading is exploratory and is reported as such, not as a pass.
 
-Significance is reported alongside but is not a pass criterion: PR-level exact permutation test over labellings, two-sided, on precision. Finding-level tests are not used (clustering — see `engine-runner/docs/discussion-brief-traffic-light.md`, retraction).
+Significance is reported alongside but is not a pass criterion: PR-level exact permutation test over labellings, two-sided, on precision (which test applies to which comparison: §12 A8). Finding-level tests are not used (clustering — see `engine-runner/docs/discussion-brief-traffic-light.md`, retraction).
 
 ## 3. Cohort
 
@@ -54,6 +54,8 @@ A case is **RISKY** in arms T and G iff at least one finding has severity ≥ `m
 
 A continuous risk score (max over findings of severity-weight × confidence) is also recorded for ROC reporting, but the pre-registered comparison uses the binary rule above.
 
+Severity weights: §12 A6.
+
 ## 6. Reason match
 
 For each RISKY true positive in T and G, the `internal/judge` two-call procedure compares the case's highest-ranked finding to the materialised fixing diff. Verdicts `MECHANISM` / `LOCALITY_ONLY` / `NONE` / `TOO_VAGUE` as currently defined. Only `MECHANISM` counts toward the 60% criterion. `LOCALITY_ONLY` rate is reported as the rationalisation tell. Judge is in-family (Opus); this is stated on every figure. Cross-vendor re-judging is desirable, not required for this pre-registration.
@@ -71,7 +73,7 @@ Recall is reported per class. Pre-stated expectation, recorded so it can be wron
 ## 8. Contamination controls
 
 - Cases post-date the model cutoff (§3).
-- Post-hoc scan over every sealed `review-*.json` for: the fixing commit SHA (any prefix ≥ 7), the fixing PR number, CVE identifiers, and phrases lifted from post-merge discussion. Any hit voids the case for that arm and is reported.
+- Post-hoc scan over every sealed `review-*.json` for: the fixing commit SHA (any prefix ≥ 7), the fixing PR number, CVE identifiers, and phrases lifted from post-merge discussion (defined in §12 A7). Any hit voids the case for that arm and is reported.
 - The planted-`CLAUDE.md` steering test is re-run once under the T tool grant before the arm starts.
 
 ## 9. Budget and stopping
@@ -112,6 +114,16 @@ Per the status line, in-place amendment is permitted until the first treatment-a
 **A4. The exposure floor is a policy value, not a correlator search window.** Strong and medium signals are searched to `observation_end`; only the weak file-overlap check is bounded, at 90 days. `PLAN.md:215`'s 180-day function window was never implemented. §3's follow-up-window language describes how long evidence had to appear, not how far the correlator looked.
 
 **A5. What n=40 can and cannot show, stated in advance (informs §2).** Significance is non-criterial, but the ceiling bounds how a result is read. At 20 positives under a fully one-directional McNemar: +15 on precision (6 cases) can reach p ≈ 0.03; +15 on recall or reason-match (3 cases) cannot. A recall result at +15 is "consistent, underpowered," not a miss.
+
+### Amendments — operational definitions the build required, 2026-09-15
+
+Each of these fills a gap where §1–11 named a quantity without defining it. None is criterial; each is recorded in the output that applies it, so a result says which definition produced it.
+
+**A6. Severity weights for the continuous risk score (defines §5's "severity-weight").** `low` 0.25 · `medium` 0.5 · `high` 0.75 · `critical` 1.0, linear, so ROC ordering is by severity and then by confidence within severity. Used only for ROC reporting; the pass/fail comparison is the binary rule in §5 and is unaffected. Until registered here the scorer emitted `risk_score: null` with the omission stated.
+
+**A7. "Phrases lifted from post-merge discussion" (defines §8's fourth scan rule).** A hit is a run of **8 consecutive tokens** (lower-cased, split on non-alphanumerics) shared between any string in a sealed review and any post-merge discussion body in the case's contamination keys, **excluding** every such run that also occurs in material the reviewer was shown: `reviewer/diff.patch`, `reviewer/metadata.json`, and every repository file the review cites. Windows over `evidence[].excerpt` are not scanned by this rule (excerpts are verbatim file copies by contract; the SHA, PR and CVE rules still scan them). A window counts only if **at least 3 of its 8 tokens fall outside every excluded span** — a reviewer sentence that bridges two legitimately quoted lines with its own connector is not a lift; a lifted 8-token phrase adjacent to a quote still is. Consecutive matching windows collapse into one hit. Any hit voids the run for that arm; the scanner never un-voids, and the matched text is in the report. Parameters (8, 3, the exclusion sources) are recorded in every scan output.
+
+**A8. Which permutation test is which (amends §2's "PR-level exact permutation test over labellings").** §2's wording describes the pilot's test, which asks whether one arm beats chance. The pre-registered pairwise comparisons (T−G, T−H on precision and recall) use a **paired test**: the null is that each case's two verdicts are exchangeable; discordant cases are enumerated exactly up to 20, seeded Monte Carlo (200 000 draws, seed recorded) above; one- and two-sided p both reported. This is the exact form of the McNemar reasoning A5 already used. Per arm versus chance, the label-permutation distribution of the case-level verdict × label table under fixed margins is **Fisher's exact test**, case-level (the pilot's clustering objection does not apply — the unit is the case), two-sided, one per arm; precision and recall are not separate tests under relabelling, they are the same association. Both are reported; neither is criterial.
 
 ### Conflicts — resolved 2026-09-15
 

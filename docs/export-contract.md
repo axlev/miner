@@ -476,11 +476,11 @@ The complete public allowlist is:
 
 | Field | Inclusion rule |
 | --- | --- |
-| `schema_version` | Required; always the pinned literal `reviewer-metadata/v1`. Added 2026-09-09 at the engine's request: it pins the metadata contract independently of `control/manifest.json`, so a metadata file separated from its bundle is still self-identifying |
+| `schema_version` | Required; the pinned literal `reviewer-metadata/v1` or, **since 2026-09-15**, `reviewer-metadata/v2` (selected by `--metadata-version`; the CLI defaults to v2, the library to v1 so the pilot path is byte-identical). Added 2026-09-09 at the engine's request: it pins the metadata contract independently of `control/manifest.json`, so a metadata file separated from its bundle is still self-identifying |
 | `repository` | Required; copied from the selected correlated record's `original.repository` |
 | `cutoff_timestamp` | Required; copied from the explicit `--cutoff` argument |
-| `title` | Current cached title when PR `updated_at <= cutoff`; otherwise reconstructed by reversing a complete post-cutoff rename chain; omitted if uncertain |
-| `description` | Current cached body only when PR `updated_at <= cutoff`; omitted otherwise because no complete body edit history is available |
+| `title` | **v1:** current cached title when PR `updated_at <= cutoff`; otherwise reconstructed by reversing a complete post-cutoff rename chain; omitted if uncertain. **v2:** `updated_at` is not consulted. Admitted from the complete REST rename history alone: the current title when no rename postdates the cutoff (`method: current`), or the chain reversed to the cutoff title (`method: reconstructed`); `omitted-unverifiable` when `issue_events_complete` is false, a rename lacks a timestamp, the chain does not connect, or the PR was created after the cutoff. A post-cutoff rename is never itself a reason to omit, because it is reconstructible |
+| `description` | **v1:** current cached body only when PR `updated_at <= cutoff`; omitted otherwise. **v2:** `updated_at` is not consulted. From the bundle's complete body edit history (`body_edits`, bundle 1.1.0): `admitted` (`method: current`) when the history is complete and its last edit is at or before the cutoff, including a never-edited body; `omitted-post-cutoff-edit` when the last edit is after the cutoff; `omitted-unverifiable` when `body_edits_complete` is false (bundle predates 1.1.0, fetch failed), an edit record is deleted or undated, or the PR was created after the cutoff. Never guessed |
 | `base_branch` | Current cached base ref only when PR `updated_at <= cutoff`; omitted otherwise |
 | `commit_messages` | Included only when merge occurred by cutoff, cached list length equals declared PR commit count, and every commit has a message and timestamp no later than cutoff |
 
@@ -499,7 +499,7 @@ Still omitted everywhere in the prospective bundle (unchanged):
 - Merge commit identity.
 - Changed paths/functions.
 
-Per-field source, timestamps, validity, reconstruction method, and omission reason are recorded only in evaluator-only `metadata-export-audit.json`.
+Per-field source, timestamps, validity, reconstruction method, and omission reason are recorded only in evaluator-only `metadata-export-audit.json`, which since 2026-09-15 also carries `metadata_version` and, under v2, `admission` (`{title, description} -> {outcome, method}`) and each field decision's `outcome`. The same per-field admission is written into `cohort-case/v3` and counted in `cohort-manifest/v3` when `cohort-export` is given `--cache-dir`, computed by the same function at cutoff = `merged_at`, so arms can be stratified on what they were shown without opening evaluator material. Rule is "at or before the cutoff", which equals "at or before `merged_at`" under `cohort-verify`'s default and is the correct general form when a cutoff precedes the merge.
 
 ## 6. Identity, cutoff, diff, and later-fix behavior
 
@@ -665,7 +665,11 @@ Implemented `control/manifest.json` (see `schemas/prospective-manifest.schema.js
 ```
 
 `reviewer/metadata.json` retains the reviewer allowlist and adds a pinned
-`schema_version`. The merge commit SHA, PR number, retrospective signals/rank,
+`schema_version`. **2026-09-15:** `reviewer-metadata/v2` is a second pinned value with
+the identical field list and types; only the admission rule for `title` and
+`description` differs (§5). The engine's validator must accept both strings; nothing
+else in the bundle changes. v1 remains selectable (`--metadata-version v1`) so the
+pilot bundles stay reproducible. The merge commit SHA, PR number, retrospective signals/rank,
 observation end, later repository HEAD, and mining heuristic details remain outside the
 bundle entirely; `base_commit`/`cutoff_commit` are inside it but under `control/`, which
 the engine never passes to a reasoner.

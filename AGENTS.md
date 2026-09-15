@@ -195,6 +195,21 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-15: reviewer-metadata/v2, export half. A second pinned version string with
+  an identical wire shape; only the admission rule for `title` and `description`
+  changes, from the PR-level `updated_at` (which any post-merge comment advances and
+  which dropped 9 of 10 pilot descriptions) to each field's own edit history. Title
+  keeps reconstruction: a post-cutoff rename is reversed, not a reason to omit, and
+  the method (`current`/`reconstructed`) is recorded beside the outcome so arms can
+  be stratified on it. Body cannot be reconstructed, so a post-cutoff edit omits and
+  an incomplete history is `omitted-unverifiable`, never guessed. `base_branch` and
+  `commit_messages` keep the v1 rules (no per-field history). v1 stays selectable and
+  is the library default, so the pilot path is byte-identical; the CLI defaults to
+  v2. `cohort-export --cache-dir` records the same per-field decision in
+  `cohort-case/v3` / `cohort-manifest/v3` at cutoff = `merged_at`, computed by the
+  function the exporter uses, so manifest and audit cannot disagree. This is a
+  contract change the engine must accept (both version strings); recorded in
+  `docs/export-contract.md` §5 and §9 and `schemas/reviewer-metadata.schema.json`.
 - 2026-09-15: reviewer-metadata/v2, collector half. Cache bundle `1.0.0` -> `1.1.0`
   (additive): the PR body's edit history from GraphQL `userContentEdits`, with
   `body_edits_complete`, `body_edits_fetched_at` and `body_edits_error`. Chose a raw

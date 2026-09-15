@@ -97,7 +97,7 @@ func TestNegativesRequireACountedCleanCorrelation(t *testing.T) {
 	if cases[1].EarliestFixDate != nil {
 		t.Errorf("negative must not carry earliest_fix_date: %v", cases[1].EarliestFixDate)
 	}
-	if cases[0].SchemaVersion != "cohort-case/v2" || m.SchemaVersion != "cohort-manifest/v2" {
+	if cases[0].SchemaVersion != CaseSchemaVersion || m.SchemaVersion != ManifestSchemaVersion {
 		t.Errorf("schema versions %q / %q", cases[0].SchemaVersion, m.SchemaVersion)
 	}
 }

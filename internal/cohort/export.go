@@ -12,7 +12,10 @@ import (
 	"time"
 
 	"miner/internal/buildinfo"
+	"miner/internal/collector"
 	"miner/internal/model"
+	"miner/internal/prospectiveexport"
+	"miner/internal/storage"
 )
 
 // Schema version strings for the cohort artifacts. Both are new artifacts, not
@@ -23,9 +26,15 @@ import (
 // uncounted_negative, uninspected_negative, no_fix_date and fix_before_min_date. A
 // negative is now refused unless its record was correlated by a counting build and
 // its count is zero.
+//
+// v3 (2026-09-15): when cohort-export is given the collect cache, each case carries
+// the reviewer-metadata/v2 admission outcome and method for title and description
+// (the same decision prospective-export makes), and the manifest counts them, so
+// arms can be stratified on what they were actually shown. Absent when the cache
+// was not given: never guessed.
 const (
-	CaseSchemaVersion     = "cohort-case/v2"
-	ManifestSchemaVersion = "cohort-manifest/v2"
+	CaseSchemaVersion     = "cohort-case/v3"
+	ManifestSchemaVersion = "cohort-manifest/v3"
 
 	// DefaultMinExposureDays is the pre-registered exposure floor
 	// (docs/h1-pre-registration.md, "Exposure guard"). It is a policy value, not a
@@ -54,6 +63,9 @@ type ExportOptions struct {
 	// signal is at or after this instant (pre-registration §3: the fix must postdate
 	// the treatment model's training cutoff). Recorded in the manifest.
 	MinFixDate time.Time
+	// CacheDir, when set, is the collect-time cache root; each case then records the
+	// v2 admission outcome per field, computed at the case's merged_at.
+	CacheDir string
 }
 
 // Cell is the matching key. A negative is only ever paired with a positive in the
@@ -88,9 +100,12 @@ type Case struct {
 	UninspectedCommitCount int  `json:"uninspected_commit_count"`
 	// EarliestFixDate is the earliest corrective-signal timestamp (strong, or medium
 	// when the positive tier is "any" and no strong signal exists). Absent for CLEAN.
-	EarliestFixDate *time.Time              `json:"earliest_fix_date,omitempty"`
-	RecordSHA256    string                  `json:"record_sha256"`
-	Record          model.PRCandidateRecord `json:"record"`
+	EarliestFixDate *time.Time `json:"earliest_fix_date,omitempty"`
+	// Admission is the reviewer-metadata/v2 outcome and method per field ("title",
+	// "description") at cutoff = merged_at, present only when the cache was given.
+	Admission    map[string]prospectiveexport.FieldAdmission `json:"admission,omitempty"`
+	RecordSHA256 string                                      `json:"record_sha256"`
+	Record       model.PRCandidateRecord                     `json:"record"`
 }
 
 // Pair records one positive/negative match in the manifest.
@@ -153,6 +168,9 @@ type Manifest struct {
 	Pairs              []Pair     `json:"pairs"`
 	UnmatchedPositives []int      `json:"unmatched_positives"`
 	Exclusions         Exclusions `json:"exclusions"`
+	// Admission summarises the per-case v2 outcomes: field -> outcome -> count. Absent
+	// when the cache was not given.
+	Admission map[string]map[string]int `json:"admission,omitempty"`
 }
 
 // sizeBands are the coarse changed-lines bands, closed at the top of each range.
@@ -268,10 +286,42 @@ func Export(records []model.PRCandidateRecord, inputBytes []byte, opt ExportOpti
 	manifest.Input.SHA256 = digest(inputBytes)
 	manifest.Input.RecordCount = len(records)
 
+	if opt.CacheDir != "" {
+		if err := annotateAdmission(cases, manifest, opt.CacheDir); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := write(opt.Out, cases, manifest); err != nil {
 		return nil, err
 	}
 	return manifest, nil
+}
+
+// annotateAdmission reads each case's cache bundle and records the v2 admission
+// outcome per field at cutoff = merged_at. A missing or unreadable bundle fails the
+// export: a cohort that claims to record admission must record it for every case.
+func annotateAdmission(cases []Case, m *Manifest, cacheDir string) error {
+	cache := storage.NewDiskCache(cacheDir)
+	m.Admission = map[string]map[string]int{}
+	for i := range cases {
+		c := &cases[i]
+		var bundle collector.RawPRBundle
+		if err := cache.ReadPR(c.Repository, c.PR, &bundle); err != nil {
+			return fmt.Errorf("PR #%d: cache bundle needed for admission outcomes: %w", c.PR, err)
+		}
+		if bundle.PR == nil || bundle.PR.GetNumber() != c.PR {
+			return fmt.Errorf("PR #%d: cache bundle does not describe this PR", c.PR)
+		}
+		c.Admission = prospectiveexport.Admission(bundle, c.Record.Original.MergedAt.UTC())
+		for field, a := range c.Admission {
+			if m.Admission[field] == nil {
+				m.Admission[field] = map[string]int{}
+			}
+			m.Admission[field][a.Outcome]++
+		}
+	}
+	return nil
 }
 
 type classified struct {

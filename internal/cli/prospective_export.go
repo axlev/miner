@@ -9,8 +9,8 @@ import (
 )
 
 var prospectiveExportFlags struct {
-	input, cacheFile, repo, cutoff, caseID, prospectiveOut, evaluatorOut string
-	pr                                                                   int
+	input, cacheFile, repo, cutoff, caseID, prospectiveOut, evaluatorOut, metadataVersion string
+	pr                                                                                    int
 }
 
 var prospectiveExportCmd = &cobra.Command{
@@ -31,6 +31,7 @@ var prospectiveExportCmd = &cobra.Command{
 			CaseID:          f.caseID,
 			ProspectiveOut:  f.prospectiveOut,
 			EvaluatorOut:    f.evaluatorOut,
+			MetadataVersion: f.metadataVersion,
 		}
 		if err := prospectiveexport.Export(cmd.Context(), opt); err != nil {
 			return err
@@ -50,6 +51,7 @@ func init() {
 	prospectiveExportCmd.Flags().StringVar(&f.caseID, "case-id", "", "Case identifier override; a neutral opaque ID is generated when omitted")
 	prospectiveExportCmd.Flags().StringVar(&f.prospectiveOut, "prospective-out", "", "New output directory for the engine-ingestible prospective bundle (reviewer/ + control/)")
 	prospectiveExportCmd.Flags().StringVar(&f.evaluatorOut, "evaluator-out", "", "New output directory for evaluator-only artifacts")
+	prospectiveExportCmd.Flags().StringVar(&f.metadataVersion, "metadata-version", "v2", "Reviewer-metadata contract: v2 (per-field edit history) or v1 (updated_at rule, pilot reproduction)")
 	for _, name := range []string{"input", "cache-file", "repo", "pr", "cutoff", "prospective-out", "evaluator-out"} {
 		_ = prospectiveExportCmd.MarkFlagRequired(name)
 	}

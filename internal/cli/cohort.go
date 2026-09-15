@@ -72,7 +72,7 @@ given to a reviewer or wired into an engine-visible path.`,
 }
 
 var cohortVerifyFlags struct {
-	input, repo, cacheDir, out, cutoff, benchRepo, prs string
+	input, repo, cacheDir, out, cutoff, benchRepo, prs, metadataVersion string
 }
 
 var cohortVerifyCmd = &cobra.Command{
@@ -117,12 +117,13 @@ Each case is pinned to its own merged_at unless --cutoff overrides every case at
 			return fmt.Errorf("--prs is required (comma-separated PR numbers)")
 		}
 		opt := cohort.VerifyOptions{
-			Records:   records,
-			PRs:       prs,
-			Repo:      f.repo,
-			CacheDir:  f.cacheDir,
-			OutDir:    f.out,
-			BenchRepo: f.benchRepo,
+			Records:         records,
+			PRs:             prs,
+			Repo:            f.repo,
+			CacheDir:        f.cacheDir,
+			OutDir:          f.out,
+			BenchRepo:       f.benchRepo,
+			MetadataVersion: f.metadataVersion,
 		}
 		if f.cutoff != "" {
 			t, err := time.Parse(time.RFC3339, f.cutoff)
@@ -165,6 +166,7 @@ func init() {
 	cohortVerifyCmd.Flags().StringVar(&v.cutoff, "cutoff", "", "Pin every case to one RFC3339 cutoff (default: each PR's merged_at)")
 	cohortVerifyCmd.Flags().StringVar(&v.benchRepo, "bench-repo", "", "engine-runner checkout; when set, each bundle is validated by the engine")
 	cohortVerifyCmd.Flags().StringVar(&v.prs, "prs", "", "Comma-separated shortlist of PR numbers")
+	cohortVerifyCmd.Flags().StringVar(&v.metadataVersion, "metadata-version", "v2", "Reviewer-metadata contract: v2 (per-field edit history) or v1 (updated_at rule, pilot reproduction)")
 	for _, name := range []string{"repo", "cache-dir", "out", "prs"} {
 		_ = cohortVerifyCmd.MarkFlagRequired(name)
 	}

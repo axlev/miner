@@ -56,6 +56,9 @@ type VerifyOptions struct {
 	// the command is reported instead — the engine is a separate module and this repo
 	// does not assume a sibling checkout exists.
 	BenchRepo string
+	// MetadataVersion selects the reviewer-metadata contract ("v1" or "v2"); empty
+	// means the exporter's library default (v1).
+	MetadataVersion string
 }
 
 // cachePath derives the collect-time cache location for one PR.
@@ -127,6 +130,7 @@ func Verify(ctx context.Context, opt VerifyOptions) ([]CaseResult, error) {
 			Cutoff:          cutoff,
 			ProspectiveOut:  bundle,
 			EvaluatorOut:    filepath.Join(opt.OutDir, res.CaseID+"-evaluator-only"),
+			MetadataVersion: opt.MetadataVersion,
 		})
 		if err != nil {
 			res.Err = firstLine(err.Error())

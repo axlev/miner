@@ -323,6 +323,16 @@ the source snapshot only warns on stderr: that vocabulary belongs to the upstrea
 repository, and the engine's protocol has a waiver for exactly those paths, so they are
 reported for a human to judge rather than renamed or dropped.
 
+`--metadata-version` selects the reviewer-metadata contract: `v2` (default since
+2026-09-15) admits `title` and `description` from each field's own edit history —
+title from the complete rename events, reconstructed to the cutoff title when renamed
+later; description from the bundle's complete body edit history when its last edit is at
+or before the cutoff — and never from the PR-level `updated_at`, which any post-merge
+comment advances. `v1` keeps the `updated_at` rule for reproducing the pilot bundles. The
+per-field outcome (`admitted` / `omitted-post-cutoff-edit` / `omitted-unverifiable`) and
+method (`current` / `reconstructed`) are recorded in the evaluator audit file. The wire
+shape of `reviewer/metadata.json` is unchanged; only the version string differs.
+
 `--evaluator-out` receives `correlated-report.json` (the complete selected
 correlated record) and `metadata-export-audit.json` (per-field provenance for every
 metadata.json decision). It is never under the bundle root and the engine never
@@ -387,6 +397,9 @@ go run ./cmd/miner cohort-verify \
   --bench-repo ~/repos/engine-runner
 ```
 
+`--metadata-version` (default `v2`) is passed through to every export; use `v1` to
+reproduce the pilot bundles byte for byte.
+
 This runs the real prospective export for each shortlisted PR and then submits each
 resulting bundle to `engine-runner`'s own boundary validator, reporting a per-case
 pass/fail table. Each case is pinned to its own `merged_at` unless `--cutoff` overrides
@@ -426,10 +439,10 @@ go run ./cmd/miner cohort-export \
 
 It writes two files into a new directory, atomically (`--out` must not exist):
 
-- `cohort.jsonl` — one `cohort-case/v2` line per case: `sampler_label` (`RISKY` or
+- `cohort.jsonl` — one `cohort-case/v3` line per case: `sampler_label` (`RISKY` or
   `CLEAN`), `pair_id`, `matched_pr`, `exposure_days`, `changed_lines`, the matching
   `cell`, `record_sha256`, and the unmodified pipeline record under `record`.
-- `cohort-manifest.json` — one `cohort-manifest/v2` object identifying the cohort:
+- `cohort-manifest.json` — one `cohort-manifest/v3` object identifying the cohort:
   record counts, `records_sha256` (SHA-256 over the sorted per-record hashes), the
   `config_hash` / `miner_version` / `target_repo_head_sha` / `observation_end` shared by
   every record (non-uniform provenance is refused), the exporter's own build, the input
@@ -461,6 +474,10 @@ Rules, all of which fail closed:
   `provenance.correlated_by` set and `uninspected_commit_count` zero. Records failing
   either are counted as `uncounted_negative` / `uninspected_negative`. Positives carry
   the count for information (`correlation_counted`, `uninspected_commit_count`).
+- **`--cache-dir`** (optional) makes each case record the reviewer-metadata/v2
+  admission outcome and method for `title` and `description` at cutoff = `merged_at`,
+  and the manifest count them, using the same decision `prospective-export` makes. A
+  missing bundle fails the export. Without it the field is absent, never guessed.
 - **`--min-fix-date`** admits a positive only if its earliest corrective signal is on
   or after that date; every positive case records `earliest_fix_date` (earliest strong
   timestamp, or earliest medium under `any`). Recorded in the manifest as a filter.
