@@ -1,4 +1,10 @@
-# H1 — pre-registration
+# H1 — pre-registration (superseded)
+
+> **Superseded 2026-09-15 by [`h1-preregistration.md`](h1-preregistration.md),
+> which is canonical.** This file is retained because it carries dated
+> decisions and verified findings the canonical document does not yet include;
+> each is listed in the reconciliation note at the end. Do not cite this file
+> for thresholds, arms, or cohort window — cite the canonical one.
 
 This document supersedes the staged-review question in `engine-runner`'s
 `system-design.md` §15 as the target both repositories optimise for. It is a
@@ -233,3 +239,66 @@ which exist in code (`internal/prospectiveexport`,
 artifacts is `docs/export-contract.md` §3 and §9, not `PLAN.md` §3–4. The
 code's own oracle-manifest schema states that no dedicated oracle-export
 command exists yet and that it documents current behaviour, not a target.
+
+## Reconciliation note — 2026-09-15
+
+`h1-preregistration.md` is canonical. This section records what this file
+carries that the canonical one does not, and where the two disagree. Items
+under *carried forward* are verified findings that should land in the
+canonical document as dated amendments before any cohort freezes; items under
+*conflicts* are decisions for the owner.
+
+### Carried forward — verified, absent from canonical
+
+1. **Diff-failure accounting is a precondition for admitting any negative.**
+   `CommitDiff`'s four 15-second subprocess timeouts are swallowed by
+   `getSummary` (`correlator.go:275-282`), so a zero-signal record can be a
+   load artifact. Confirmed by citation verification. No cohort may freeze
+   until per-record accounting exists and every negative shows zero swallowed
+   failures. The canonical §3 negative rule ("no corrective evidence within the
+   follow-up window") needs this precondition stated, and the history baseline
+   H inherits it.
+2. **The metadata admission rule is decided before freeze, not after.** On the
+   ten pilot bundles, 1 of 10 carried a description and 1 of 10 a title
+   (`export.go:201, 217, 278-280`). Every pilot arm ran under that condition.
+   Canonical §3's "given only review-time information" is currently defined by
+   an unchosen rule. Per-case admission outcome should be recorded in the
+   cohort manifest.
+3. **"Zero signals" means zero at every tier — strong, medium, *and* weak.**
+   The shipped `cohort-export` enforces this; canonical §3 says only "no
+   corrective evidence," which is ambiguous about weak signals.
+4. **The 180-day exposure floor is a policy value, not a correlator window.**
+   Strong and medium signals are searched to `observation_end`; only the weak
+   file check is 90-day-bounded. `PLAN.md:215`'s 180-day window was never
+   implemented. Canonical §3's follow-up-window language should not be read as
+   describing the search.
+5. **What n=40 can and cannot show, stated in advance.** Canonical §2 makes
+   significance non-criterial, which is right, but the ceiling still bounds
+   how a result is read: at 20 positives, +15 on precision (6 cases) can reach
+   p ≈ 0.03 under a fully one-directional McNemar; +15 on recall or
+   reason-match (3 cases) cannot. Worth carrying so a "consistent, underpowered"
+   recall result is not read as a miss.
+
+### Conflicts — owner's decision
+
+- **Contamination standard.** This file: per-case probe, treatment model must
+  pass the Heartbleed guard. Canonical §3/§8: recency via a fresh 2026 collect.
+  Recency is the stronger standard and the fresh collect makes it available
+  (the probe doc's "unavailable" was about the 2024 data). **Canonical
+  supersedes** — with one check the canonical text defers: the requirement is
+  that *fixing commits* post-date the model cutoff, not that PR merge dates do.
+  A Jan–Jun 2026 PR whose fix landed before the model's cutoff is contaminated
+  even though the PR is inside the window. §3 says to verify the exact model
+  string's cutoff; that verification decides whether the window holds.
+- **Negative matching criteria.** This file and the *shipped* `cohort-export`
+  (`ac05526`): stateful-score band + subsystem + size band. Canonical §3:
+  subsystem + size band + merge month. The code does not match on merge month
+  and does match on stateful band. Either the code changes (`cohort-case/v2`)
+  or §3 does. Not resolvable by editing a document alone.
+- **Recall as a pass criterion.** This file: +15 on recall. Canonical §2 (as
+  amended): recall reported, not criterial. **Canonical supersedes.**
+- **Treatment model guard.** This file: any guard-passing model. Canonical §4:
+  Opus. Compatible; under recency the guard is moot. **Canonical supersedes.**
+
+Everything else in this file — the decisions log, build order, deferred list,
+and the Step 0 note on `PLAN.md` — is process record and stays here.
