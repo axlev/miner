@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://miner.local/schemas/history-baseline.schema.json",
+  "title": "History baseline verdict, arm H (evaluator-only)",
+  "description": "One file per cohort case, <out>/<case_id>.json, written by `miner history-baseline`: the zero-LLM baseline's verdict from pre-cutoff repository history alone. The top-level fields schema_version, case_id, risky, score, subsystem, tercile, rule and provenance are the contract engine-runner validates; every other key is detail the engine tolerates and ignores. Evaluator-only: an arm's verdict, never given to a reviewer arm or placed under a prospective bundle. Reads no fix, no label, no provider.",
+  "type": "object",
+  "required": ["schema_version", "case_id", "risky", "score", "rule", "provenance"],
+  "properties": {
+    "schema_version": { "const": "history-baseline/v1" },
+    "case_id": { "type": "string", "pattern": "^case-[0-9a-f]{16}$" },
+    "risky": { "type": ["boolean", "null"], "description": "true when the primary subsystem is in the top tercile; false otherwise, including low activity; null when the history could not be resolved (see reason)." },
+    "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "The primary subsystem's score; null when unscored." },
+    "subsystem": { "type": "string", "description": "The case's primary subsystem: most changed lines in the PR diff, ties to the higher-scoring one." },
+    "tercile": { "type": "integer", "minimum": 1, "maximum": 3 },
+    "rule": {
+      "type": "object",
+      "required": ["window_months", "signal_tiers", "risky_if", "date_field", "min_commits", "score", "tie_rule", "primary_subsystem"],
+      "properties": {
+        "window_months": { "const": 24 },
+        "signal_tiers": { "const": ["strong"] },
+        "risky_if": { "const": "top tercile" },
+        "date_field": { "const": "committer" },
+        "min_commits": { "const": 20 },
+        "score": { "const": "mean percentile rank of density and churn_lines" },
+        "tie_rule": { "const": "lower tercile" },
+        "primary_subsystem": { "const": "most changed lines" },
+        "history": { "type": "string" },
+        "attribution": { "type": "string" },
+        "percentile": { "type": "string" },
+        "tercile": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["produced_by", "produced_at", "input_sha256"],
+      "properties": {
+        "produced_by": { "type": "string" },
+        "produced_at": { "type": "string", "format": "date-time" },
+        "input_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the cohort.jsonl the case came from." }
+      }
+    },
+    "reason": { "type": "string" },
+    "merge_base": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The merge commit's first parent: the base branch as it stood at merge." },
+    "window": { "type": "array", "items": { "type": "string", "format": "date-time" }, "minItems": 2, "maxItems": 2 },
+    "cutoff": { "type": "string", "format": "date-time" },
+    "repository": { "type": "string" },
+    "pr": { "type": "integer" },
+    "touched": { "type": "array", "items": { "type": "object" } },
+    "detail": { "type": "array", "items": { "type": "object", "required": ["name", "commits", "churn_lines", "defects", "density", "score"] } },
+    "defects": { "type": "array", "items": { "type": "object", "required": ["sha", "subsystem", "attributed_by"] } },
+    "walk_commits": { "type": "integer" }
+  }
+}

@@ -73,12 +73,22 @@ var genericContainers = map[string]bool{
 // container directory when it finds one. Cohort diversity is judged on this, so a
 // cohort is not seven variations of one subsystem.
 func subsystemOf(files []model.ChangedFile) string {
-	if len(files) == 0 {
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	return SubsystemOfPaths(paths)
+}
+
+// SubsystemOfPaths is subsystemOf over bare paths. Exported so the history
+// baseline groups commits by exactly the key the sampler matches on.
+func SubsystemOfPaths(paths []string) string {
+	if len(paths) == 0 {
 		return "(none)"
 	}
 	counts := map[string]int{}
-	for _, f := range files {
-		p := strings.TrimPrefix(path.Clean(f.Path), "./")
+	for _, raw := range paths {
+		p := strings.TrimPrefix(path.Clean(raw), "./")
 		segs := strings.Split(p, "/")
 		top := segs[0]
 		if len(segs) > 2 && genericContainers[strings.ToLower(top)] {

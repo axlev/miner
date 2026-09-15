@@ -88,6 +88,7 @@ Registered commands:
 - `merge-correlated` (added 2026-09-15)
 - `refresh-body-edits` (added 2026-09-15)
 - `contamination-keys` (added 2026-09-15)
+- `history-baseline` (added 2026-09-15)
 
 Important internal packages:
 
@@ -106,6 +107,7 @@ Important internal packages:
 | `internal/cohort` | Evaluator-facing cohort selection reports, shortlist verification, and the matched-cohort sampler |
 | `internal/correlatemerge` | Splices a re-correlated subset into the full set by PR number, fail-closed on identity, with a flip report |
 | `internal/contamkeys` | Per-case contamination keys for the engine's post-hoc scan: fixing commits and PRs, CVE ids, verbatim post-merge discussion; evaluator-only |
+| `internal/historybaseline` | Arm H: per-case RISKY/CLEAN from pre-cutoff subsystem defect density and churn, mirror only; evaluator-only |
 
 All Go packages are under `internal`, so the supported cross-repository boundary is currently files/JSON rather than a Go import API.
 
@@ -152,6 +154,9 @@ merge-correlated:
 contamination-keys:
   <out>/<case_id>.json                        contamination-keys/v1, one per case
   <cache-dir>/github/<owner>_<repo>/fixes/    cached provider answers (commit_<sha>_prs, pr_<n>, issue_<n>)
+
+history-baseline:
+  <out>/<case_id>.json                        history-baseline/v1, one per case
 
 inspect and stats:
   stdout only
@@ -399,6 +404,26 @@ output directory is written atomically and must not pre-exist.
 This is oracle-grade material (§7 risks 1 and 2 in their strongest form): it names the
 fix and quotes the discussion of the defect. It is never written under a prospective
 bundle root and is subject to the same access rule as reason labels.
+
+### History baseline, arm H (evaluator-only)
+
+**Added 2026-09-15.** `history-baseline` (`internal/historybaseline`) is the zero-LLM
+baseline of `docs/h1-pre-registration.md`, computed from the mirror and the cohort file
+only: no provider, no correlated evidence, no labels. The frozen rule is written into
+every file (`rule`): 24-month window before the cutoff on **committer** date over all
+ancestors of `<merge_commit>^1`; subsystem key = `cohort.SubsystemOfPaths`; strong-tier
+corrective commits by `correlator.StrongCorrectiveRefs` (the same regexes
+`CorrelatePR` uses), attributed to the fixed commit's subsystem when it resolves, else to
+the merge commit of a fixed PR number found in the walk, else to the commit's own
+primary subsystem, each recorded as `attributed_by`; score = mean of mid-rank
+percentiles of `density` and `churn_lines` over subsystems with ≥ 20 commits; tercile
+from the fraction of scored subsystems strictly below, so ties fall lower; RISKY iff the
+case's primary subsystem (most changed lines in `changed_files`, ties to the higher
+score) is in tercile 3. Contract fields the engine validates: `schema_version`,
+`case_id`, `risky`, `score`, `subsystem`, `tercile`, `rule`, `provenance`; everything
+else (`detail`, `defects`, `touched`, `reason`, `merge_base`, `window`) is tolerated
+extra. Deterministic up to `provenance.produced_at`; `input_sha256` is the cohort file's
+hash. Output directory atomic and immutable.
 
 The adjudicated per-case answer is a separate evaluator-only document:
 `schemas/reason-label.schema.json` (`reason-label/v1`) with its closed category list in

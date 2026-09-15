@@ -120,6 +120,64 @@ func MatchRegressionMentions(message string, targetSHAs []string, targetPRNumber
 	return "", false
 }
 
+// StrongCorrectiveRefs extracts every strong-tier corrective reference a message
+// carries, without a target: the SHAs and PR numbers named by the same Fixes:,
+// revert, and regression-attribution regexes CorrelatePR matches against a specific
+// PR. matched is true when any strong pattern fired, even one whose reference could
+// not be captured. This is the history baseline's corrective-commit test; it reuses
+// the matchers rather than restating them so the two can never drift.
+func StrongCorrectiveRefs(message string) (shas []string, prs []int, matched bool) {
+	seenSHA := map[string]bool{}
+	seenPR := map[int]bool{}
+	addSHA := func(s string) {
+		s = strings.ToLower(s)
+		if s != "" && !seenSHA[s] {
+			seenSHA[s] = true
+			shas = append(shas, s)
+		}
+	}
+	addPR := func(s string) {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && !seenPR[n] {
+			seenPR[n] = true
+			prs = append(prs, n)
+		}
+	}
+	for _, m := range fixesSHARegex.FindAllStringSubmatch(message, -1) {
+		matched = true
+		if len(m) > 1 {
+			addSHA(m[1])
+		}
+	}
+	for _, m := range fixesPRRegex.FindAllStringSubmatch(message, -1) {
+		matched = true
+		if len(m) > 1 {
+			addPR(m[1])
+		}
+	}
+	for _, m := range revertCommitRegex.FindAllStringSubmatch(message, -1) {
+		matched = true
+		if len(m) > 1 {
+			addSHA(m[1])
+		}
+	}
+	if revertSubjectRegex.MatchString(message) {
+		matched = true
+	}
+	for _, m := range regressionRegex.FindAllStringSubmatch(message, -1) {
+		matched = true
+		if len(m) > 1 && m[1] != "" {
+			addSHA(m[1])
+		}
+		if len(m) > 2 && m[2] != "" {
+			addPR(m[2])
+		}
+		if len(m) > 3 && m[3] != "" {
+			addSHA(m[3])
+		}
+	}
+	return shas, prs, matched
+}
+
 // HasFixKeywords returns true if message contains bugfix/corrective terminology.
 func HasFixKeywords(message string) bool {
 	return fixKeywordRegex.MatchString(message)

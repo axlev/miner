@@ -513,6 +513,31 @@ non-zero if any file is incomplete.
 **This output is oracle-grade.** It names the fix and quotes the discussion of the
 defect: never under a prospective bundle root, never to a reviewer or either coder role.
 
+**Stage 5 — arm H, the history baseline.** The zero-LLM baseline of H1, computed from
+the mirror alone:
+
+```bash
+go run ./cmd/miner history-baseline \
+  --input ./output/frr-2026-cohort-v1/cohort.jsonl \
+  --git-dir ./data/repos/FRRouting/frr.git \
+  --out ./output/frr-2026-cohort-v1-history
+```
+
+For each case it walks every ancestor of the merge commit's first parent (the base
+branch as it stood at merge) whose **committer** date lies in the 24 months before the
+cutoff, groups commits by the subsystem key the sampler matches on, and computes per
+subsystem `commits`, `churn_lines`, `defects` (commits carrying a strong corrective
+signal by the correlator's own matchers, attributed to the subsystem of the commit they
+fix when it resolves, else to their own) and `density`. Subsystems with at least 20
+commits are scored by the mean percentile rank of density and churn; terciles are taken
+within the case's own window with ties falling lower; the case is RISKY when its primary
+subsystem (most changed lines in the PR) is in the top tercile. Fewer than 20 commits
+is CLEAN with `low_activity` recorded; an unresolvable history is `risky: null` with a
+reason. Output is `<out>/<case_id>.json` (`history-baseline/v1`,
+`schemas/history-baseline.schema.json`), deterministic up to `produced_at`, and carries
+the frozen rule verbatim plus every subsystem's features under `detail`. Evaluator-only:
+an arm's verdict, never given to a reviewer arm.
+
 The output is evaluator-facing: it embeds retrospective evidence and must never be given
 to a reviewer or wired into an engine-visible path. To build bundles for the cohort, feed
 the PR numbers from the manifest to `cohort-verify --prs` against the same candidates

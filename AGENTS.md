@@ -195,6 +195,18 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-15: Arm H (`history-baseline`) is built in the miner, per alex. Two
+  helpers were exported rather than duplicated so H and the rest of the pipeline
+  cannot drift: `cohort.SubsystemOfPaths` (the sampler's matching key) and
+  `correlator.StrongCorrectiveRefs` (the strong-tier regexes without a target).
+  Committer date, not author date, bounds the window: it is when a commit existed on
+  the branch. Ties fall to the lower tercile via a strictly-below fraction, which
+  means a many-way tie at the top can leave no subsystem in tercile 3 — accepted, and
+  recorded in the rule text, because promoting ties would flag on a coin toss. The
+  2026 run gets its own root (`/home/alex/data/FRR2026H1`) with a fresh mirror cloned
+  from github.com rather than a fetch into the pilot's mirror, so the pilot's
+  provenance stays byte-identical; the pilot's directories are root-owned and
+  unwritable by this user in any case.
 - 2026-09-15: Item 3b, `contamination-keys`. A separate command rather than part of
   `cohort-export`, because it needs the provider and the mirror while `cohort-export`
   is offline and deterministic; folding it in would have made `records_sha256` depend
