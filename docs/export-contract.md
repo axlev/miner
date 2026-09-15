@@ -20,7 +20,10 @@ The implemented workflow is:
 
 1. `collect`
    - Searches GitHub for merged PRs in monthly intervals.
-   - Fetches PR details, comments, commits, and issue events into a local cache.
+   - Fetches PR details, comments, commits, issue events, and (since 2026-09-15,
+     bundle 1.1.0) the PR body's edit history via GraphQL `userContentEdits` into a
+     local cache, with a per-field completeness flag; a GraphQL failure is recorded,
+     never fatal.
    - Reads base/head/merge identities from the cached GitHub PR response.
    - Uses a local Git repository to compute the merge-base PR diff (`base...head`) and derive changed paths and functions.
    - Writes initial `PRCandidateRecord` JSONL.
@@ -82,6 +85,7 @@ Registered commands:
 - `cohort-verify`
 - `cohort-export` (added 2026-09-15)
 - `merge-correlated` (added 2026-09-15)
+- `refresh-body-edits` (added 2026-09-15)
 
 Important internal packages:
 
@@ -108,7 +112,7 @@ All Go packages are under `internal`, so the supported cross-repository boundary
 
 ```text
 collect:
-  <cache-dir>/github/<owner>_<repo>/prs/pr_<number>.json
+  <cache-dir>/github/<owner>_<repo>/prs/pr_<number>.json   bundle_version 1.1.0
   <git-dir>/                                  bare Git repository
   data/raw_prs.jsonl                          default JSONL output
 
@@ -546,7 +550,7 @@ The following are verified risks or contract weaknesses:
 3. **~~Prospective and evaluator-only files share one case root.~~** **Fixed 2026-09-06:** `prospective-export` now writes to two independent caller-supplied roots (`--prospective-out`, `--evaluator-out`); there is no longer a shared parent directory to recursively over-ingest.
 4. **~~A case ID can disclose the PR number.~~** **Fixed 2026-09-06:** `--case-id` is optional; the default is an opaque, miner-generated `case-<16 hex chars>` (SHA-256 of repository/PR/cutoff) that does not embed the PR number as a literal substring. A caller may still supply an explicit ID (still validated as a neutral path component), so this risk returns if a caller deliberately overrides it with a PR-derived string.
 5. **~~Record/cache identity is not cross-checked.~~** **Fixed 2026-09-06:** `crossCheckIdentity` rejects a mismatch between the cache bundle's PR number, repository, and base/head SHA and the selected correlated record's, before any output is written.
-6. **Collection treats current cached PR fields as `OriginalPR`.** Title, body, labels, and base ref may have changed after merge. The specialized prospective exporter screens only title/body/base branch. *(unchanged)*
+6. **Collection treats current cached PR fields as `OriginalPR`.** Title, body, labels, and base ref may have changed after merge. The specialized prospective exporter screens only title/body/base branch. *(unchanged in the exporter; **data half addressed 2026-09-15**: bundle 1.1.0 carries the body's complete edit history with an honest completeness flag, and title renames were already in the issue events, so the exporter's per-field rule for `reviewer-metadata/v2` — admit if the field's last edit is at or before the cutoff — is now answerable from the cache. `refresh-body-edits` back-fills older bundles per PR. Labels and base ref still have no history.)*
 7. **Forbidden-value validation is exact-string based.** It checks selected full SHAs, snippets, contexts, and notes, but not short SHAs, PR references, paraphrases, or future values absent from those fields. *(unchanged; see §10 item 9 — this remains intentional defense-in-depth behind positive cutoff-provenance validation, not the primary gate)*
 8. **~~No prospective code snapshot is supplied.~~** **Fixed 2026-09-09:** `reviewer/repository/` is a materialized directory tree of `cutoff_commit`, written from the object database. The engine no longer needs a clone, a checkout, or a patch-application step, so there is no path by which it could observe post-cutoff code from its own working tree.
 9. **Repository HEAD is recorded but does not constrain retrospective traversal.** `git log --all` can inspect commits on any local ref. *(unchanged; retrospective-export concern, not prospective-export)*

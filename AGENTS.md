@@ -195,6 +195,20 @@ bundle `engine-runner` ingests — see the 2026-09-09 decision below.
 
 ## Decisions log
 
+- 2026-09-15: reviewer-metadata/v2, collector half. Cache bundle `1.0.0` -> `1.1.0`
+  (additive): the PR body's edit history from GraphQL `userContentEdits`, with
+  `body_edits_complete`, `body_edits_fetched_at` and `body_edits_error`. Chose a raw
+  POST through the oauth2 client already held by the REST client over a GraphQL
+  library, so no dependency was added for one query. A partial page is never stored:
+  the fetch returns nothing on any failure, the flag stays false and the reason is
+  recorded, and a collect is never aborted over it, because the export half's
+  "omitted-unverifiable" outcome depends on the flag being honest. Title edits stay on
+  the REST `renamed` issue events so each field has one history source. Added
+  `refresh-body-edits` (per-PR, atomic replace, `fetched_at` preserved) because A2
+  promised a per-PR re-fetch rather than a full re-collect. `body_edits_fetched_at` is
+  the instant the history is complete *as of*; the exporter must read the stored
+  history, not re-fetch, so the audit trail stays a fact about the cache. The
+  `prospectiveexport` half is a separate item and was not touched.
 - 2026-09-15: Migration item 1 (timeout accounting). The correlator now counts, per
   record, the post-merge commits with fix vocabulary whose diff it could not read, and
   stamps `provenance.correlated_by`; record schema `1.0.0` -> `1.1.0`, batch manifests

@@ -40,6 +40,39 @@ func (c *DiskCache) WritePR(repo string, prNumber int, rawData []byte) error {
 	return os.WriteFile(path, rawData, 0644)
 }
 
+// ReplacePR atomically replaces an existing cached PR: the new bytes are written to
+// a temporary sibling and renamed over the old file, so a reader never sees a
+// partial bundle and a failed write leaves the old bundle intact.
+func (c *DiskCache) ReplacePR(repo string, prNumber int, rawData []byte) error {
+	path := c.PRCachePath(repo, prNumber)
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("refusing to replace a PR that is not cached: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".pr_"+fmt.Sprint(prNumber)+"-*.json")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(rawData); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0644); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
 // ReadPR reads the raw cached JSON for a PR.
 func (c *DiskCache) ReadPR(repo string, prNumber int, target interface{}) error {
 	path := c.PRCachePath(repo, prNumber)

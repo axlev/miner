@@ -87,6 +87,35 @@ go run ./cmd/miner collect \
   --out ./data/raw_prs.jsonl
 ```
 
+Every cache bundle written by this build is `bundle_version` `1.1.0`: besides the PR,
+comments, commits, and issue events, it carries the PR **body's edit history**
+(`body_edits`, from GraphQL `userContentEdits`) with its own completeness flag
+`body_edits_complete` and `body_edits_fetched_at`. Title edits stay on the REST
+`renamed` issue events; each field's history has one source. A GraphQL failure (no
+token, scope, transport) never aborts a collect: the bundle is written with the flag
+false and the reason in `body_edits_error`, and the PR number is logged. A bundle from
+an older build has no `bundle_version` and reads as "history unknown", not "never
+edited".
+
+To fill in body edits on bundles collected before 1.1.0 without re-collecting anything
+else (fetched_at is preserved, the bundle is replaced atomically):
+
+```bash
+go run ./cmd/miner refresh-body-edits \
+  --repo FRRouting/frr \
+  --cache-dir ./data/cache \
+  --prs ./output/frr-2026-cohort-v1/cohort-manifest.json   # or a file of numbers, or 1,2,3
+```
+
+The command exits non-zero if any PR ended with an incomplete history, so a cohort
+refresh cannot be mistaken for a clean one.
+
+**Order matters: refresh before exporting a cohort, never after.** A refresh rewrites
+the bundle bytes, and every prospective export records `cache_bundle_sha256` in its
+evaluator audit file; a bundle refreshed after export no longer matches the audit of
+the bundle that was exported. For the 2026 collect this does not arise (the collect
+writes 1.1.0 bundles from the start); it matters only for caches collected earlier.
+
 #### Step 2: Retrospective Correlation
 Scans post-merge Git commit history up to `--observation-end` for `Fixes: <SHA>`, reverts, regression citations, and code-line relationships.
 
