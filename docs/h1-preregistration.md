@@ -29,10 +29,10 @@ Significance is reported alongside but is not a pass criterion: PR-level exact p
 
 ## 3. Cohort
 
-- **Source:** FRRouting/frr pull requests merged 2026-01-01 to 2026-06-30, collected fresh by `miner collect`. This window post-dates the reviewer model's training cutoff by construction; verify the cutoff date of the exact model string used and record it in the cohort doc.
+- **Source:** FRRouting/frr pull requests merged 2026-01-01 to 2026-06-30, collected fresh by `miner collect`. This window post-dates the reviewer model's training cutoff by construction; verify the cutoff date of the exact model string used and record it in the cohort doc (see §12 C1 — the requirement is on fixing-commit dates, and the window may need to move).
 - **Size:** 40 cases, target 20 positives / 20 negatives. Minimum acceptable: 32 (16/16).
 - **Positive:** a later commit with strong corrective evidence (`Fixes:` SHA/PR, revert, or explicit regression attribution) pointing at the PR, *and* the evaluator classifies the escape as system-level under §7 — not `classical-memory-safety` unless it manifested as a runtime failure in a routing/state path. Selection reads retrospective evidence; that is legitimate for construction and means nobody who selected may tune `internal/heuristics`.
-- **Negative:** no corrective evidence within the follow-up window, matched to a positive on subsystem (daemon), diff size band (±1 order of magnitude in +/− lines), and merge month. Each negative is read by the evaluator; the standard is the existing one — a construct a competent reviewer might flag where flagging would be wrong is preferred but not required. Security-adjacent code is excluded as a negative.
+- **Negative:** no corrective evidence within the follow-up window (see §12 A1, A3 for what "no corrective evidence" requires), matched to a positive on subsystem (daemon), diff size band (±1 order of magnitude in +/− lines), and merge month (see §12 C2 — the shipped matcher differs). Each negative is read by the evaluator; the standard is the existing one — a construct a competent reviewer might flag where flagging would be wrong is preferred but not required. Security-adjacent code is excluded as a negative.
 - **Known weakness, accepted:** follow-up for a June 2026 merge is under three months at collection time. Negatives from the late window are weaker evidence of cleanliness. Report negatives' follow-up length as a covariate; do not silently exclude late ones.
 - **Freeze:** all 40 bundles pass `cohort-verify --bench-repo` before any arm runs. Cohort doc lists case IDs, class labels, and provenance hashes. Evaluator-only.
 
@@ -92,3 +92,25 @@ Recall is reported per class. Pre-stated expectation, recorded so it can be wron
 - `coder-miner`: collect, correlate, export, matching procedure. No oracle beyond existing grants.
 - `coder-engine-runner`: protocol versions, verdict schema, arms T/G/H plumbing, contamination scan. No oracle.
 - `evaluator`: cohort selection, class labels, negative-control reading, case-level scoring, this document's results section. Holds the oracle. Never edits prompts, adapters, or `reviewer/` exports.
+
+## 12. Amendments before the first arm run
+
+Per the status line, in-place amendment is permitted until the first treatment-arm run; after that, changes go to `h1-preregistration-v2.md`. Each entry is dated. Sections 1–11 above are the frozen v1 text; where an amendment changes their meaning, the section carries an inline pointer here.
+
+### Amendments — verified findings, carried forward 2026-09-15
+
+**A1. Diff-failure accounting is a precondition for admitting any negative (amends §3).** The silent failure in correlation is `CommitDiff`'s four 15-second subprocess timeouts (`internal/gitx/repo.go`, `limits.go`), swallowed by `getSummary` (`internal/correlator/correlator.go:275-282`). Under load a record can lose weak and medium signals with only a strong hit leaving a trace, so a zero-signal record can be a load artifact. No cohort freezes until per-record accounting exists and every negative shows zero swallowed failures. Arm H consumes the same correlate output and inherits the precondition. Confirmed by citation verification against the checkout.
+
+**A2. The metadata admission rule is decided before freeze, not after (amends §1's "review-time information").** On the ten pilot bundles, 1 of 10 `reviewer/metadata.json` files carried a description and 1 of 10 a title; all 10 carried commit messages. Cause: with cutoff = `merged_at`, post-merge activity bumps `updated_at` past the cutoff and the description is dropped (`prospectiveexport/export.go:201, 217`); the title is dropped too unless `IssueEventsComplete` is set (`:278-280`). Every pilot result was produced under that condition. Whether and how to admit pre-cutoff title and body is a `reviewer-metadata/v2` decision made before the H1 cohort freezes; whichever way it goes, per-case admission is recorded in the cohort manifest so arms can be stratified on it.
+
+**A3. "No corrective evidence" means zero signals at every tier — strong, medium, and weak (amends §3).** Absence of strong and medium alone is not enough. The shipped `cohort-export` enforces this.
+
+**A4. The exposure floor is a policy value, not a correlator search window.** Strong and medium signals are searched to `observation_end`; only the weak file-overlap check is bounded, at 90 days. `PLAN.md:215`'s 180-day function window was never implemented. §3's follow-up-window language describes how long evidence had to appear, not how far the correlator looked.
+
+**A5. What n=40 can and cannot show, stated in advance (informs §2).** Significance is non-criterial, but the ceiling bounds how a result is read. At 20 positives under a fully one-directional McNemar: +15 on precision (6 cases) can reach p ≈ 0.03; +15 on recall or reason-match (3 cases) cannot. A recall result at +15 is "consistent, underpowered," not a miss.
+
+### Conflicts — open, owner's decision
+
+**C1. The contamination window (§3).** §3 says the Jan–Jun 2026 collect "post-dates the reviewer model's training cutoff by construction." The requirement is that *fixing commits* post-date the cutoff, not that PR merge dates do — a January PR whose fix landed in March is contaminated even though the PR is inside the window. And if the exact Opus string's cutoff is mid-2026, Jan–Jun PRs do not post-date it. The verification §3 already calls for decides whether the window holds or must shift later. **Open until the cutoff date is recorded.**
+
+**C2. Negative matching criteria (§3).** §3 matches on subsystem, size band, and merge month. The shipped `cohort-export` (`ac05526`) matches on stateful-score band, subsystem, and size band — it does not match on merge month and does match on stateful band. Either the code changes (`cohort-case/v2`) or §3 does. **Open; not resolvable by editing this document alone.**
