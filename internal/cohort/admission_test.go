@@ -47,7 +47,7 @@ func TestCohortExportRecordsAdmissionWhenGivenTheCache(t *testing.T) {
 
 	opt := options(t, "out")
 	opt.CacheDir = cacheDir
-	m, err := Export(records, nil, opt)
+	m, err := export(records, nil, opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestCohortExportRecordsAdmissionWhenGivenTheCache(t *testing.T) {
 
 	// Without the cache: nothing is recorded, nothing is guessed.
 	plain := options(t, "plain")
-	mp, err := Export(records, nil, plain)
+	mp, err := export(records, nil, plain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestCohortExportRecordsAdmissionWhenGivenTheCache(t *testing.T) {
 	// A case whose bundle is missing fails the export rather than being skipped.
 	missing := options(t, "missing")
 	missing.CacheDir = t.TempDir()
-	if _, err := Export(records, nil, missing); err == nil || !strings.Contains(err.Error(), "cache bundle needed") {
+	if _, err := export(records, nil, missing); err == nil || !strings.Contains(err.Error(), "cache bundle needed") {
 		t.Errorf("missing bundle: err = %v", err)
 	}
 }

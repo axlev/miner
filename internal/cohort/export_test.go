@@ -77,7 +77,7 @@ func TestNegativesRequireACountedCleanCorrelation(t *testing.T) {
 		cohortRecord(4, "bgpd", 20, 0.7, 0, 0, 0, 400), // counted, zero: the only real negative
 	}
 	opt := options(t, "out")
-	m, err := Export(records, nil, opt)
+	m, err := export(records, nil, opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestUncountedPositiveIsAdmittedAndFlagged(t *testing.T) {
 	pos.Provenance.CorrelatedBy = ""
 	records := []model.PRCandidateRecord{pos, cohortRecord(2, "bgpd", 20, 0.7, 0, 0, 0, 400)}
 	opt := options(t, "out")
-	if _, err := Export(records, nil, opt); err != nil {
+	if _, err := export(records, nil, opt); err != nil {
 		t.Fatal(err)
 	}
 	cases := readCases(t, opt.Out)
@@ -133,7 +133,7 @@ func TestMinFixDateAdmitsOnlyLateFixes(t *testing.T) {
 	}
 	opt := options(t, "out")
 	opt.MinFixDate = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	m, err := Export(records, nil, opt)
+	m, err := export(records, nil, opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestMinFixDateAdmitsOnlyLateFixes(t *testing.T) {
 		o := options(t, fmt.Sprintf("explicit-%d", prs[0]))
 		o.MinFixDate = opt.MinFixDate
 		o.Positives = prs
-		if _, err := Export(records, nil, o); err == nil {
+		if _, err := export(records, nil, o); err == nil {
 			t.Errorf("explicit positive %v should fail closed under min-fix-date", prs)
 		}
 	}
@@ -160,7 +160,7 @@ func TestMinFixDateAdmitsOnlyLateFixes(t *testing.T) {
 	o := options(t, "any")
 	o.PositiveSignals = "any"
 	o.MinFixDate = opt.MinFixDate
-	m2, err := Export([]model.PRCandidateRecord{medOnly, cohortRecord(8, "zebra", 20, 0.7, 0, 0, 0, 400)}, nil, o)
+	m2, err := export([]model.PRCandidateRecord{medOnly, cohortRecord(8, "zebra", 20, 0.7, 0, 0, 0, 400)}, nil, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,12 +172,23 @@ func TestMinFixDateAdmitsOnlyLateFixes(t *testing.T) {
 func options(t *testing.T, name string) ExportOptions {
 	t.Helper()
 	return ExportOptions{
-		Input:           "candidates.jsonl",
 		Out:             filepath.Join(t.TempDir(), name),
 		Name:            "test-cohort",
 		PositiveSignals: "strong",
 		MinExposureDays: DefaultMinExposureDays,
 	}
+}
+
+// withRecords attaches one source named "candidates" holding recs, the shape every
+// single-source test used before cohorts could draw on more than one file.
+func withRecords(opt ExportOptions, recs []model.PRCandidateRecord) ExportOptions {
+	opt.Sources = []Source{{Label: "candidates", Path: "candidates.jsonl", Records: recs, Bytes: []byte("candidates")}}
+	return opt
+}
+
+// export runs a single-source export, the old Export(records, bytes, opt) shape.
+func export(recs []model.PRCandidateRecord, _ []byte, opt ExportOptions) (*Manifest, error) {
+	return Export(withRecords(opt, recs))
 }
 
 func readCases(t *testing.T, out string) []Case {
@@ -205,7 +216,7 @@ func TestNegativesRequireZeroSignalsAtEveryTier(t *testing.T) {
 		cohortRecord(4, "bgpd", 20, 0.7, 0, 0, 0, 400), // the only real negative
 	}
 	opt := options(t, "out")
-	m, err := Export(records, nil, opt)
+	m, err := export(records, nil, opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +252,7 @@ func TestMediumCountsAsPositiveOnlyUnderAny(t *testing.T) {
 	}
 	opt := options(t, "out")
 	opt.PositiveSignals = "any"
-	m, err := Export(records, nil, opt)
+	m, err := export(records, nil, opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +277,7 @@ func TestExposureFloorAppliesToBothClasses(t *testing.T) {
 	records = append(records, missing, inverted)
 
 	opt := options(t, "out")
-	m, err := Export(records, nil, opt)
+	m, err := export(records, nil, opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +307,7 @@ func TestMatchingStaysInsideTheCellAndPrefersNearestScore(t *testing.T) {
 		cohortRecord(17, "bgpd", 20, 0.70, 1, 0, 0, 400),  // third positive: nothing left
 	}
 	opt := options(t, "out")
-	m, err := Export(records, nil, opt)
+	m, err := export(records, nil, opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,11 +341,11 @@ func TestExportIsDeterministicUnderInputOrder(t *testing.T) {
 	reversed := []model.PRCandidateRecord{forward[3], forward[2], forward[1], forward[0]}
 
 	a, b := options(t, "a"), options(t, "b")
-	ma, err := Export(forward, []byte("x"), a)
+	ma, err := export(forward, []byte("x"), a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mb, err := Export(reversed, []byte("x"), b)
+	mb, err := export(reversed, []byte("x"), b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,11 +378,11 @@ func TestFilterArgumentsAreCohortIdentity(t *testing.T) {
 	}
 	loose, strict := options(t, "loose"), options(t, "strict")
 	strict.MinScore = 0.5
-	ml, err := Export(records, nil, loose)
+	ml, err := export(records, nil, loose)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms, err := Export(records, nil, strict)
+	ms, err := export(records, nil, strict)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +392,8 @@ func TestFilterArgumentsAreCohortIdentity(t *testing.T) {
 	if ml.RecordsSHA256 == ms.RecordsSHA256 {
 		t.Errorf("different cohorts share a records hash")
 	}
-	if ml.ConfigHash != ms.ConfigHash || ml.MinerVersion != ms.MinerVersion || !ml.ObservationEnd.Equal(ms.ObservationEnd) {
+	a, b := ml.Sources[0], ms.Sources[0]
+	if a.ConfigHash != b.ConfigHash || a.MinerVersion != b.MinerVersion || !a.ObservationEnd.Equal(b.ObservationEnd) {
 		t.Errorf("per-record provenance should be identical across the two cohorts")
 	}
 	if ms.Filters.MinScore != 0.5 || ml.Filters.MinScore != 0 {
@@ -404,7 +416,7 @@ func TestExplicitPositivesFailClosed(t *testing.T) {
 		positives []int
 		wantErr   string
 	}{
-		{[]int{3}, "no zero-signal PR matches its cell"},
+		{[]int{3}, "no zero-signal PR matches its key"},
 		{[]int{4}, "does not meet --positive-signals=strong"},
 		{[]int{2}, "no corrective evidence at any tier"},
 		{[]int{5}, "below the 180-day minimum"},
@@ -413,7 +425,7 @@ func TestExplicitPositivesFailClosed(t *testing.T) {
 	for _, c := range cases {
 		opt := options(t, "out")
 		opt.Positives = c.positives
-		_, err := Export(records, nil, opt)
+		_, err := export(records, nil, opt)
 		if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 			t.Errorf("positives %v: err = %v, want containing %q", c.positives, err, c.wantErr)
 		}
@@ -425,7 +437,7 @@ func TestExplicitPositivesFailClosed(t *testing.T) {
 	// A valid explicit list narrows the positives and is recorded in the manifest.
 	opt := options(t, "ok")
 	opt.Positives = []int{1}
-	m, err := Export(records, nil, opt)
+	m, err := export(records, nil, opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,9 +465,9 @@ func TestNonUniformProvenanceIsRefused(t *testing.T) {
 		records := []model.PRCandidateRecord{base[0], base[1]}
 		mutate(&records[1])
 		opt := options(t, field)
-		_, err := Export(records, nil, opt)
-		if err == nil || !strings.Contains(err.Error(), field) {
-			t.Errorf("%s: err = %v, want a refusal naming the field", field, err)
+		_, err := export(records, nil, opt)
+		if err == nil || !strings.Contains(err.Error(), field) || !strings.Contains(err.Error(), "candidates") {
+			t.Errorf("%s: err = %v, want a refusal naming the field and the source", field, err)
 		}
 		if _, statErr := os.Lstat(opt.Out); !os.IsNotExist(statErr) {
 			t.Errorf("%s: output written despite failure", field)
@@ -468,7 +480,7 @@ func TestDuplicatePRIsRefused(t *testing.T) {
 		cohortRecord(1, "bgpd", 20, 0.70, 1, 0, 0, 400),
 		cohortRecord(1, "bgpd", 20, 0.70, 0, 0, 0, 400),
 	}
-	if _, err := Export(records, nil, options(t, "out")); err == nil || !strings.Contains(err.Error(), "more than once") {
+	if _, err := export(records, nil, options(t, "out")); err == nil || !strings.Contains(err.Error(), "refusing to choose") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -479,16 +491,16 @@ func TestOutputIsImmutableAndAtomic(t *testing.T) {
 		cohortRecord(2, "bgpd", 20, 0.70, 0, 0, 0, 400),
 	}
 	opt := options(t, "out")
-	if _, err := Export(records, nil, opt); err != nil {
+	if _, err := export(records, nil, opt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Export(records, nil, opt); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if _, err := export(records, nil, opt); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("second export over an existing directory: err = %v", err)
 	}
 	// A failing export leaves neither the directory nor a temporary sibling.
 	failing := options(t, "fail")
 	failing.Positives = []int{99}
-	if _, err := Export(records, nil, failing); err == nil {
+	if _, err := export(records, nil, failing); err == nil {
 		t.Fatal("expected failure")
 	}
 	entries, err := os.ReadDir(filepath.Dir(failing.Out))
@@ -511,7 +523,7 @@ func TestNoPairsIsAnError(t *testing.T) {
 		cohortRecord(2, "zebra", 20, 0.70, 0, 0, 0, 400),
 	}
 	opt := options(t, "out")
-	if _, err := Export(records, nil, opt); err == nil || !strings.Contains(err.Error(), "no matched pairs") {
+	if _, err := export(records, nil, opt); err == nil || !strings.Contains(err.Error(), "no matched pairs") {
 		t.Errorf("err = %v", err)
 	}
 	if _, statErr := os.Lstat(opt.Out); !os.IsNotExist(statErr) {

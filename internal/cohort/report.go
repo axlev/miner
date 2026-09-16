@@ -68,20 +68,85 @@ var genericContainers = map[string]bool{
 	"internal": true, "src": true, "pkg": true, "cmd": true, "lib64": true, "source": true,
 }
 
-// subsystemOf returns the coarsest *useful* grouping key for a change: the most
-// common leading path component among its changed files, stepping through a generic
-// container directory when it finds one. Cohort diversity is judged on this, so a
-// cohort is not seven variations of one subsystem.
-func subsystemOf(files []model.ChangedFile) string {
-	paths := make([]string, 0, len(files))
-	for _, f := range files {
-		paths = append(paths, f.Path)
-	}
-	return SubsystemOfPaths(paths)
+// SubsystemRule names the rule PrimarySubsystem applies, for the manifest.
+const SubsystemRule = "code-first"
+
+// ancillaryGroups are grouping keys that describe a change's tests, documentation
+// or tooling rather than the code it changes. A PR that fixes one line of OSPF and
+// adds twenty topotest files is a change to ospfd, not to "tests": keying it by
+// file count would match it against test-only negatives and make the history
+// baseline score the test tree. They are skipped when a change touches any code,
+// and used as the key only when a change touches nothing else.
+var ancillaryGroups = map[string]bool{
+	"tests": true, "test": true, "doc": true, "docs": true, "tools": true,
+	".github": true, "ci": true, ".ci": true, "m4": true,
 }
 
-// SubsystemOfPaths is subsystemOf over bare paths. Exported so the history
-// baseline groups commits by exactly the key the sampler matches on.
+// IsAncillaryGroup reports whether a grouping key describes tests, docs, tooling,
+// or a repository-level build file rather than a code subsystem.
+func IsAncillaryGroup(name string) bool {
+	if ancillaryGroups[strings.ToLower(name)] {
+		return true
+	}
+	// A key with no separator that looks like a filename is a top-level build or
+	// repository file (configure.ac, Makefile.am, .gitignore), not a subsystem.
+	if !strings.Contains(name, "/") && (strings.Contains(name, ".") || strings.EqualFold(name, "Makefile")) {
+		return true
+	}
+	return false
+}
+
+// subsystemOf returns the change's primary subsystem, weighted by changed lines
+// under the code-first rule.
+func subsystemOf(files []model.ChangedFile) string {
+	return PrimarySubsystem(WeighFiles(files))
+}
+
+// WeighFiles buckets changed files by grouping key with their changed lines.
+func WeighFiles(files []model.ChangedFile) map[string]int {
+	w := map[string]int{}
+	for _, f := range files {
+		w[SubsystemOfPaths([]string{f.Path})] += f.Additions + f.Deletions
+	}
+	return w
+}
+
+// PrimarySubsystem returns the one subsystem a change belongs to: the code group
+// with the most changed lines, ignoring ancillary groups (tests, docs, tooling,
+// repository-level build files). A change that touches nothing but ancillary paths
+// keys by the largest of those instead, so it is still grouped somewhere. Ties
+// break on name, so the answer never depends on map order.
+//
+// Weighting is by changed lines, not by file count: the file-count rule keyed a
+// one-line ospfd fix with twenty new topotests as "tests" (found 2026-09-16 by the
+// evaluator read of the first H1 cohort). Both the sampler's matching key and the
+// history baseline's subsystem use this, so the two always agree.
+func PrimarySubsystem(weights map[string]int) string {
+	pick := func(ancillary bool) string {
+		best, bestN := "", -1
+		for name, n := range weights {
+			if IsAncillaryGroup(name) != ancillary {
+				continue
+			}
+			if n > bestN || (n == bestN && name < best) {
+				best, bestN = name, n
+			}
+		}
+		return best
+	}
+	if code := pick(false); code != "" {
+		return code
+	}
+	if anc := pick(true); anc != "" {
+		return anc
+	}
+	return "(none)"
+}
+
+// SubsystemOfPaths is the grouping key for a set of paths: the most common leading
+// path component, stepping through a generic container directory when it finds one.
+// It answers "which bucket", not "which subsystem is this change about" — that is
+// PrimarySubsystem, which weighs the buckets code-first.
 func SubsystemOfPaths(paths []string) string {
 	if len(paths) == 0 {
 		return "(none)"

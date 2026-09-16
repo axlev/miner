@@ -443,10 +443,10 @@ go run ./cmd/miner cohort-export \
 
 It writes two files into a new directory, atomically (`--out` must not exist):
 
-- `cohort.jsonl` — one `cohort-case/v3` line per case: `sampler_label` (`RISKY` or
+- `cohort.jsonl` — one `cohort-case/v4` line per case: `sampler_label` (`RISKY` or
   `CLEAN`), `pair_id`, `matched_pr`, `exposure_days`, `changed_lines`, the matching
   `cell`, `record_sha256`, and the unmodified pipeline record under `record`.
-- `cohort-manifest.json` — one `cohort-manifest/v3` object identifying the cohort:
+- `cohort-manifest.json` — one `cohort-manifest/v4` object identifying the cohort:
   record counts, `records_sha256` (SHA-256 over the sorted per-record hashes), the
   `config_hash` / `miner_version` / `target_repo_head_sha` / `observation_end` shared by
   every record (non-uniform provenance is refused), the exporter's own build, the input
@@ -485,6 +485,25 @@ Rules, all of which fail closed:
 - **`--min-fix-date`** admits a positive only if its earliest corrective signal is on
   or after that date; every positive case records `earliest_fix_date` (earliest strong
   timestamp, or earliest medium under `any`). Recorded in the manifest as a filter.
+- **`--match-key`** names which cell fields a negative must share with its positive,
+  any subset of `category,subsystem,size_band`; the default is all three. Every case
+  still records its full cell, so a dropped field stays visible. The key is recorded
+  in the manifest under `matching.key`.
+- **`--max-per-subsystem N`** caps how many positives one subsystem may contribute, so
+  a cohort is not one daemon repeated. Positives over the cap are counted as
+  `over_subsystem_quota`; an explicit `--positives` list that exceeds it fails the
+  export rather than being silently trimmed.
+- **`--input` may be repeated**, as `[label=]path`, to draw one cohort from more than
+  one collection window. Each source keeps its own provenance in the manifest's
+  `sources` array, each case records the `source` it came from, and provenance
+  uniformity is enforced within a source and required of nothing across sources.
+  `records_sha256` is then the digest over the per-source digests, in `sources` order.
+- **Subsystem is code-first.** A change's subsystem is the code group with the most
+  changed lines, ignoring `tests/`, `doc/`, `tools/`, `.github/` and repository-level
+  build files; a change touching nothing else keys by the largest of those. A one-line
+  daemon fix with twenty new topotests is a change to the daemon, not to "tests". The
+  history baseline uses the same rule, so a cohort cell and a baseline verdict always
+  mean the same subsystem.
 
 **Stage 4 — contamination keys.** For the engine's post-hoc contamination scan, write
 one keys file per case from the cohort:

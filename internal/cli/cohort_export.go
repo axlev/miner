@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,9 +14,39 @@ import (
 )
 
 var cohortExportFlags struct {
-	input, out, name, positiveSignals, positives, minFixDate, cacheDir string
-	minScore                                                           float64
-	minExposureDays                                                    int
+	inputs                                                      []string
+	out, name, positiveSignals, positives, minFixDate, cacheDir string
+	matchKey                                                    string
+	minScore                                                    float64
+	minExposureDays, maxPerSubsystem                            int
+}
+
+// parseSource accepts "label=path" or a bare path, whose label is then the file's
+// parent directory name, or its stem when that is not informative. A label names
+// the source in the manifest and on every case drawn from it.
+func parseSource(arg string) (cohort.Source, error) {
+	label, path := "", arg
+	if i := strings.Index(arg, "="); i > 0 && !strings.Contains(arg[:i], "/") {
+		label, path = arg[:i], arg[i+1:]
+	}
+	if label == "" {
+		label = filepath.Base(filepath.Dir(path))
+		if label == "." || label == "/" || label == "data" || label == "" {
+			label = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return cohort.Source{}, fmt.Errorf("read source %q: %w", path, err)
+	}
+	recs, err := storage.ReadJSONL(path)
+	if err != nil {
+		return cohort.Source{}, fmt.Errorf("read source %q: %w", path, err)
+	}
+	if len(recs) == 0 {
+		return cohort.Source{}, fmt.Errorf("source %q has no records", path)
+	}
+	return cohort.Source{Label: label, Path: path, Records: recs, Bytes: raw}, nil
 }
 
 var cohortExportCmd = &cobra.Command{
@@ -51,16 +82,16 @@ shared provenance, and every filter argument, because the same input under diffe
 arguments is a different cohort.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		f := cohortExportFlags
-		raw, err := os.ReadFile(f.input)
-		if err != nil {
-			return fmt.Errorf("read candidates: %w", err)
+		var sources []cohort.Source
+		for _, in := range f.inputs {
+			src, err := parseSource(in)
+			if err != nil {
+				return err
+			}
+			sources = append(sources, src)
 		}
-		records, err := storage.ReadJSONL(f.input)
-		if err != nil {
-			return fmt.Errorf("read candidates: %w", err)
-		}
-		if len(records) == 0 {
-			return fmt.Errorf("no records in %q", f.input)
+		if len(sources) == 0 {
+			return fmt.Errorf("--input is required (repeat it for a multi-source cohort)")
 		}
 		var positives []int
 		for _, part := range strings.Split(f.positives, ",") {
@@ -82,8 +113,14 @@ arguments is a different cohort.`,
 			}
 			minFixDate = t.UTC()
 		}
+		var matchKey []string
+		for _, k := range strings.Split(f.matchKey, ",") {
+			if k = strings.TrimSpace(k); k != "" {
+				matchKey = append(matchKey, k)
+			}
+		}
 		opt := cohort.ExportOptions{
-			Input:           f.input,
+			Sources:         sources,
 			Out:             f.out,
 			Name:            f.name,
 			MinScore:        f.minScore,
@@ -92,13 +129,19 @@ arguments is a different cohort.`,
 			Positives:       positives,
 			MinFixDate:      minFixDate,
 			CacheDir:        f.cacheDir,
+			MatchKey:        matchKey,
+			MaxPerSubsystem: f.maxPerSubsystem,
 		}
-		m, err := cohort.Export(records, raw, opt)
+		m, err := cohort.Export(opt)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Wrote cohort %q: %d cases (%d pairs) from %d candidates to %s\n",
-			m.Name, m.RecordCount, len(m.Pairs), len(records), f.out)
+		total := 0
+		for _, src := range sources {
+			total += len(src.Records)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Wrote cohort %q: %d cases (%d pairs) from %d candidates across %d source(s) to %s\n",
+			m.Name, m.RecordCount, len(m.Pairs), total, len(sources), f.out)
 		fmt.Fprintf(cmd.OutOrStdout(), "records_sha256 %s\n", m.RecordsSHA256)
 		if len(m.UnmatchedPositives) > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "Dropped %d positives with no same-cell negative: %v\n", len(m.UnmatchedPositives), m.UnmatchedPositives)
@@ -109,7 +152,9 @@ arguments is a different cohort.`,
 
 func init() {
 	f := &cohortExportFlags
-	cohortExportCmd.Flags().StringVarP(&f.input, "input", "i", "./data/candidates.jsonl", "Scored candidate JSONL input")
+	cohortExportCmd.Flags().StringArrayVarP(&f.inputs, "input", "i", nil, "Scored candidate JSONL input as [label=]path; repeat for a multi-source cohort")
+	cohortExportCmd.Flags().StringVar(&f.matchKey, "match-key", "", "Cell fields a negative must share with its positive: any subset of category,subsystem,size_band (default all three)")
+	cohortExportCmd.Flags().IntVar(&f.maxPerSubsystem, "max-per-subsystem", 0, "Cap positives per subsystem (0 = no cap); an explicit --positives list exceeding it fails the export")
 	cohortExportCmd.Flags().StringVarP(&f.out, "out", "o", "", "New directory receiving cohort.jsonl and cohort-manifest.json")
 	cohortExportCmd.Flags().StringVar(&f.name, "name", "", "Cohort name recorded in the manifest (e.g. frr-2026-cohort-v1)")
 	cohortExportCmd.Flags().Float64Var(&f.minScore, "min-score", 0.0, "Minimum stateful score, applied to both classes")
@@ -118,7 +163,7 @@ func init() {
 	cohortExportCmd.Flags().StringVar(&f.cacheDir, "cache-dir", "", "Collect-time cache root; when set, each case records the reviewer-metadata/v2 admission outcome per field")
 	cohortExportCmd.Flags().StringVar(&f.minFixDate, "min-fix-date", "", "Admit a positive only if its earliest corrective signal is on or after this date (YYYY-MM-DD)")
 	cohortExportCmd.Flags().StringVar(&f.positives, "positives", "", "Comma-separated explicit positive shortlist; each must qualify and match, or the export fails")
-	for _, name := range []string{"out", "name"} {
+	for _, name := range []string{"input", "out", "name"} {
 		_ = cohortExportCmd.MarkFlagRequired(name)
 	}
 }

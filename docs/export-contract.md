@@ -144,8 +144,8 @@ export:
   or a caller-selected JSONL, Markdown, or CSV path
 
 cohort-export:
-  <out>/cohort.jsonl                          cohort-case/v2 lines
-  <out>/cohort-manifest.json                  cohort-manifest/v2
+  <out>/cohort.jsonl                          cohort-case/v4 lines
+  <out>/cohort-manifest.json                  cohort-manifest/v4
 
 merge-correlated:
   <out>                                       merged correlated JSONL
@@ -340,6 +340,30 @@ floor (`observation_end - merged_at`, default 180 days) to both classes, and wri
   exclusion counts by reason. Filter arguments are in the manifest because two exports
   over one candidates file select different cohorts with identical per-record provenance.
 
+**v4 (2026-09-16).** A cohort may draw on more than one records file: `--input` is
+repeatable as `[label=]path`, the manifest carries a `sources` entry per input with
+that input's own `config_hash`, `miner_version`, `target_repo_head_sha`,
+`harvested_at`, `observation_end` and `correlated_by`, and every case records the
+`source` it came from. Provenance uniformity is enforced **within** a source and
+required of nothing across them, because two collection windows differ by
+construction; `records_sha256` becomes the digest over the per-source digests in
+`sources` order, each of which is that source's own digest over its cases' sorted
+record hashes, so cohort identity stays a property of what was *selected* rather than
+of the files selected from. `--match-key` names which cell fields a negative must
+share with its positive (any subset of `category,subsystem,size_band`; default all
+three, recorded as `matching.key`), and `--max-per-subsystem N` caps positives per
+subsystem (`filters.max_per_subsystem`, exclusion `over_subsystem_quota`; an explicit
+`--positives` list that exceeds it fails the export rather than being trimmed).
+
+**Subsystem keying is code-first (2026-09-16, `matching.subsystem_rule`).** A change's
+subsystem is the code group with the most changed *lines*, ignoring `tests/`, `doc/`,
+`docs/`, `tools/`, `.github/`, `ci/`, `m4/` and repository-level build files; a change
+touching nothing but those keys by the largest of them. The previous rule counted
+*files*, which keyed a one-line `ospfd` fix carrying twenty new topotests as `tests` —
+found by the evaluator read of the first H1 cohort, where it affected 4 of 10 admitted
+positives. `cohort.PrimarySubsystem` is shared with `internal/historybaseline`, so a
+cohort cell and a baseline verdict always name the same subsystem.
+
 **v2 (2026-09-15).** `cohort-case/v2` adds `correlation_counted`,
 `uninspected_commit_count` and `earliest_fix_date`; `cohort-manifest/v2` adds the
 `min_fix_date` filter and the exclusion reasons `uncounted_negative`,
@@ -421,8 +445,9 @@ from the fraction of scored subsystems strictly below, so ties fall lower; RISKY
 case's primary subsystem (most changed lines in `changed_files`, ties to the higher
 score) is in tercile 3. Contract fields the engine validates: `schema_version`,
 `case_id`, `risky`, `score`, `subsystem`, `tercile`, `rule`, `provenance`; everything
-else (`detail`, `defects`, `touched`, `reason`, `merge_base`, `window`) is tolerated
-extra. Deterministic up to `provenance.produced_at`; `input_sha256` is the cohort file's
+else (`detail`, `defects`, `touched`, `reason`, `merge_base`, `window`,
+`scored_subsystems`, `tercile3_count`) is tolerated extra. `rule.subsystem_rule` is
+`code-first`, the same rule the sampler matches on. Deterministic up to `provenance.produced_at`; `input_sha256` is the cohort file's
 hash. Output directory atomic and immutable.
 
 The adjudicated per-case answer is a separate evaluator-only document:

@@ -47,6 +47,7 @@ type Rule struct {
 	Score            string   `json:"score"`
 	TieRule          string   `json:"tie_rule"`
 	PrimarySubsystem string   `json:"primary_subsystem"`
+	SubsystemRule    string   `json:"subsystem_rule"`
 	History          string   `json:"history"`
 	Attribution      string   `json:"attribution"`
 	Percentile       string   `json:"percentile"`
@@ -61,7 +62,8 @@ var frozenRule = Rule{
 	MinCommits:       MinCommits,
 	Score:            "mean percentile rank of density and churn_lines",
 	TieRule:          "lower tercile",
-	PrimarySubsystem: "most changed lines",
+	PrimarySubsystem: "code subsystem with the most changed lines, ignoring tests, docs, tooling and repository-level build files; a change touching nothing else keys by the largest of those",
+	SubsystemRule:    cohort.SubsystemRule,
 	History:          "all ancestors of <merge_commit>^1 with committer date in [cutoff - 24 months, cutoff)",
 	Attribution:      "a corrective commit counts against the subsystem of the commit it fixes when that SHA resolves in the mirror (attributed_by=fixed_commit), else of the merge commit 'Merge pull request #N' for a fixed PR number found in the same walk (fixed_pr_merge), else its own primary subsystem (self)",
 	Percentile:       "(count strictly below + 0.5 * count equal) / n over subsystems with commits >= min_commits",
@@ -178,10 +180,7 @@ func Build(ctx context.Context, repo *gitx.Repository, c Case, opt Options) (*Re
 	r.Provenance.InputSHA256 = opt.InputSHA256
 
 	// The case's own touched subsystems, from its diff stats.
-	touchedLines := map[string]int{}
-	for _, f := range c.Record.Original.ChangedFiles {
-		touchedLines[cohort.SubsystemOfPaths([]string{f.Path})] += f.Additions + f.Deletions
-	}
+	touchedLines := cohort.WeighFiles(c.Record.Original.ChangedFiles)
 	if len(touchedLines) == 0 {
 		r.Reason = "case has no changed_files; no subsystem to score"
 		return r, nil
@@ -228,7 +227,7 @@ func Build(ctx context.Context, repo *gitx.Repository, c Case, opt Options) (*Re
 			s.Commits++
 			s.ChurnLines += lines
 		}
-		primaryOf[cm.SHA] = primary(perSub, nil)
+		primaryOf[cm.SHA] = cohort.PrimarySubsystem(perSub)
 		if n, ok := mergePRNumber(cm.Subject); ok {
 			if _, dup := prMerge[n]; !dup {
 				prMerge[n] = cm.SHA
@@ -315,8 +314,14 @@ func Build(ctx context.Context, repo *gitx.Repository, c Case, opt Options) (*Re
 		}
 		r.Touched = append(r.Touched, t)
 	}
+	primName := cohort.PrimarySubsystem(touchedLines)
 	sort.Slice(r.Touched, func(i, j int) bool {
 		a, b := r.Touched[i], r.Touched[j]
+		// The code-first primary leads, then the rest by size; ties on the higher
+		// score, then name, so the order never depends on map iteration.
+		if (a.Name == primName) != (b.Name == primName) {
+			return a.Name == primName
+		}
 		if a.ChangedLines != b.ChangedLines {
 			return a.ChangedLines > b.ChangedLines
 		}
@@ -350,27 +355,6 @@ func deref(p *float64) float64 {
 		return -1
 	}
 	return *p
-}
-
-// primary returns the key with the most lines; ties break on the higher score when
-// scores are given, then on name.
-func primary(lines map[string]int, score map[string]float64) string {
-	best, bestLines := "", -1
-	for name, n := range lines {
-		switch {
-		case n > bestLines:
-			best, bestLines = name, n
-		case n == bestLines:
-			if score != nil && score[name] != score[best] {
-				if score[name] > score[best] {
-					best = name
-				}
-			} else if name < best {
-				best = name
-			}
-		}
-	}
-	return best
 }
 
 // mergePRNumber recognises GitHub's merge-commit subject.
