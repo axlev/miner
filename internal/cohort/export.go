@@ -90,6 +90,34 @@ type ExportOptions struct {
 	// contribute, so a cohort is not one daemon repeated. An explicit Positives list
 	// that exceeds it fails the export rather than being silently trimmed.
 	MaxPerSubsystem int
+	// FallbackSubsystem allows a positive with no negative in its full-key cell to
+	// pair on subsystem alone, taking the negative of nearest category and then
+	// nearest size band. Every such pair records match_key_used: ["subsystem"] and
+	// is counted in the manifest, so a relaxed pair is never mistaken for a matched
+	// one. A positive whose subsystem holds no negative at all still goes unmatched.
+	FallbackSubsystem bool
+}
+
+// categoryRank orders the heuristic bands so "nearest category" has a meaning.
+func categoryRank(c string) int {
+	switch strings.ToUpper(c) {
+	case "HIGH":
+		return 2
+	case "MEDIUM":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// sizeBandRank orders the size bands for the same reason.
+func sizeBandRank(b string) int {
+	for i, band := range []string{"0", "1-10", "11-50", "51-200", "201-1000", "1001+"} {
+		if b == band {
+			return i
+		}
+	}
+	return len(sizeBands) + 1
 }
 
 // DefaultMatchKey is the shipped matching key: every cell field.
@@ -189,6 +217,12 @@ type Pair struct {
 	Positive int    `json:"positive"`
 	Negative int    `json:"negative"`
 	Cell     Cell   `json:"cell"`
+	// MatchKeyUsed is the key this pair actually matched on. It equals the run's
+	// matching.key except for a fallback pair, which records ["subsystem"].
+	MatchKeyUsed []string `json:"match_key_used"`
+	// NegativeCell is the negative's own cell, so a fallback pair shows on what it
+	// differs without opening the cases.
+	NegativeCell Cell `json:"negative_cell"`
 }
 
 // Exclusions counts every input record that did not enter the cohort, by the first
@@ -242,12 +276,13 @@ type Manifest struct {
 	Sources         []SourceInfo `json:"sources"`
 	ExporterVersion string       `json:"exporter_version"`
 	Filters         struct {
-		MinScore        float64 `json:"min_score"`
-		PositiveSignals string  `json:"positive_signals"`
-		MinExposureDays int     `json:"min_exposure_days"`
-		Positives       []int   `json:"positives"`
-		MinFixDate      string  `json:"min_fix_date"` // RFC3339, or "" when not applied
-		MaxPerSubsystem int     `json:"max_per_subsystem"`
+		MinScore          float64 `json:"min_score"`
+		PositiveSignals   string  `json:"positive_signals"`
+		MinExposureDays   int     `json:"min_exposure_days"`
+		Positives         []int   `json:"positives"`
+		MinFixDate        string  `json:"min_fix_date"` // RFC3339, or "" when not applied
+		MaxPerSubsystem   int     `json:"max_per_subsystem"`
+		FallbackSubsystem bool    `json:"fallback_subsystem"`
 	} `json:"filters"`
 	Matching struct {
 		Key           []string `json:"key"`
@@ -257,8 +292,13 @@ type Manifest struct {
 		SizeBand      string   `json:"size_band"`
 		Assignment    string   `json:"assignment"`
 		Negative      string   `json:"negative_rule"`
+		Fallback      string   `json:"fallback_rule,omitempty"`
 	} `json:"matching"`
-	Pairs              []Pair     `json:"pairs"`
+	Pairs []Pair `json:"pairs"`
+	// FallbackPairs is how many pairs matched on subsystem alone rather than the
+	// full key. Those pairs are not category-balanced and must be reported as a
+	// stratum, not folded into the rest.
+	FallbackPairs      int        `json:"fallback_pairs"`
 	UnmatchedPositives []int      `json:"unmatched_positives"`
 	Exclusions         Exclusions `json:"exclusions"`
 	// Admission summarises the per-case v2 outcomes: field -> outcome -> count. Absent
@@ -455,6 +495,7 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 	m.Filters.Positives = append([]int{}, opt.Positives...)
 	sort.Ints(m.Filters.Positives)
 	m.Filters.MaxPerSubsystem = opt.MaxPerSubsystem
+	m.Filters.FallbackSubsystem = opt.FallbackSubsystem
 	m.Matching.Key = append([]string{}, opt.MatchKey...)
 	m.Matching.ScoreBand = "stateful.category as scored (config high_threshold/medium_threshold over the max_cap-capped score)"
 	m.Matching.Subsystem = "code subsystem with the most changed lines, ignoring tests, docs, tooling and repository-level build files"
@@ -462,6 +503,9 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 	m.Matching.SizeBand = "additions+deletions over changed_files: 0, 1-10, 11-50, 51-200, 201-1000, 1001+"
 	m.Matching.Assignment = "positives in ascending PR order; each takes the unused negative sharing its matching key, nearest stateful score first, then nearest changed lines, then lowest PR; a negative may come from any source"
 	m.Matching.Negative = "zero strong, medium and weak signals, no commit relationships, summary_rank_score 0, correlated by a counting build (provenance.correlated_by set) with uninspected_commit_count 0"
+	if opt.FallbackSubsystem {
+		m.Matching.Fallback = "a positive with no negative in its full-key cell pairs on subsystem alone, taking the nearest category (HIGH>MEDIUM>LOW) then the nearest size band; the pair records match_key_used [subsystem] and is counted in fallback_pairs"
+	}
 	m.Pairs = []Pair{}
 	m.UnmatchedPositives = []int{}
 
@@ -473,6 +517,7 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 	seen := map[int]string{}
 	var positives []classified
 	negatives := map[string][]classified{}
+	bySubsystem := map[string][]classified{}
 	perSubsystem := map[string]int{}
 	for si := range opt.Sources {
 		src := &opt.Sources[si]
@@ -521,6 +566,7 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 					m.Exclusions.UninspectedNegative++
 				default:
 					negatives[ck] = append(negatives[ck], c)
+					bySubsystem[c.cell.Subsystem] = append(bySubsystem[c.cell.Subsystem], c)
 				}
 			case isPositive(rec, opt.PositiveSignals):
 				if len(explicit) > 0 && !explicit[pr] {
@@ -574,22 +620,31 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 	for _, list := range negatives {
 		sort.Slice(list, func(i, j int) bool { return list[i].rec.Original.Number < list[j].rec.Original.Number })
 	}
+	for _, list := range bySubsystem {
+		sort.Slice(list, func(i, j int) bool { return list[i].rec.Original.Number < list[j].rec.Original.Number })
+	}
 
 	var cases []Case
 	used := map[int]bool{}
 	for _, p := range positives {
-		best := -1
 		pool := negatives[p.cell.key(opt.MatchKey)]
-		for i, n := range pool {
-			if used[n.rec.Original.Number] {
-				continue
-			}
-			if best < 0 || closer(p, n, pool[best]) {
-				best = i
+		best := pick(p, pool, used, closer)
+		keyUsed := opt.MatchKey
+		if best < 0 && opt.FallbackSubsystem {
+			// No negative shares the full key. Rather than drop the positive, pair it
+			// within its subsystem on nearest category, then nearest size band. The
+			// pair is recorded as relaxed so it is never counted as a matched one.
+			pool = bySubsystem[p.cell.Subsystem]
+			best = pick(p, pool, used, nearer)
+			if best >= 0 {
+				keyUsed = []string{"subsystem"}
 			}
 		}
 		if best < 0 {
 			if explicit[p.rec.Original.Number] {
+				if opt.FallbackSubsystem {
+					return nil, nil, fmt.Errorf("PR #%d was listed as a positive but subsystem %q holds no zero-signal PR at all, so even the subsystem fallback cannot match it", p.rec.Original.Number, p.cell.Subsystem)
+				}
 				return nil, nil, fmt.Errorf("PR #%d was listed as a positive but no zero-signal PR matches its key %s", p.rec.Original.Number, p.cell.key(opt.MatchKey))
 			}
 			m.UnmatchedPositives = append(m.UnmatchedPositives, p.rec.Original.Number)
@@ -599,7 +654,10 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 		n := pool[best]
 		used[n.rec.Original.Number] = true
 		id := fmt.Sprintf("pair-%04d", len(m.Pairs)+1)
-		m.Pairs = append(m.Pairs, Pair{ID: id, Positive: p.rec.Original.Number, Negative: n.rec.Original.Number, Cell: p.cell})
+		if len(keyUsed) == 1 && keyUsed[0] == "subsystem" && len(opt.MatchKey) > 1 {
+			m.FallbackPairs++
+		}
+		m.Pairs = append(m.Pairs, Pair{ID: id, Positive: p.rec.Original.Number, Negative: n.rec.Original.Number, Cell: p.cell, MatchKeyUsed: append([]string{}, keyUsed...), NegativeCell: n.cell})
 		pc, err := newCase(p, labelRisky, id, n.rec.Original.Number)
 		if err != nil {
 			return nil, nil, err
@@ -625,6 +683,37 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 		return nil, nil, err
 	}
 	return cases, m, nil
+}
+
+// pick returns the index of the best unused negative in pool under better, or -1.
+func pick(p classified, pool []classified, used map[int]bool, better func(p, a, b classified) bool) int {
+	best := -1
+	for i, n := range pool {
+		if used[n.rec.Original.Number] {
+			continue
+		}
+		if best < 0 || better(p, n, pool[best]) {
+			best = i
+		}
+	}
+	return best
+}
+
+// nearer is the fallback ordering: closest category first, then closest size band,
+// then the full-key ordering. It is only ever reached when no negative shares the
+// positive's full key, so it never overrides a proper match.
+func nearer(p, a, b classified) bool {
+	pc := categoryRank(p.cell.Category)
+	da, db := absi(categoryRank(a.cell.Category)-pc), absi(categoryRank(b.cell.Category)-pc)
+	if da != db {
+		return da < db
+	}
+	ps := sizeBandRank(p.cell.SizeBand)
+	sa, sb := absi(sizeBandRank(a.cell.SizeBand)-ps), absi(sizeBandRank(b.cell.SizeBand)-ps)
+	if sa != sb {
+		return sa < sb
+	}
+	return closer(p, a, b)
 }
 
 // closer reports whether candidate a is a better match for p than b: nearest

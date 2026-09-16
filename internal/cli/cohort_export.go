@@ -17,6 +17,7 @@ var cohortExportFlags struct {
 	inputs                                                      []string
 	out, name, positiveSignals, positives, minFixDate, cacheDir string
 	matchKey                                                    string
+	fallbackSubsystem                                           bool
 	minScore                                                    float64
 	minExposureDays, maxPerSubsystem                            int
 }
@@ -120,17 +121,18 @@ arguments is a different cohort.`,
 			}
 		}
 		opt := cohort.ExportOptions{
-			Sources:         sources,
-			Out:             f.out,
-			Name:            f.name,
-			MinScore:        f.minScore,
-			PositiveSignals: strings.ToLower(f.positiveSignals),
-			MinExposureDays: f.minExposureDays,
-			Positives:       positives,
-			MinFixDate:      minFixDate,
-			CacheDir:        f.cacheDir,
-			MatchKey:        matchKey,
-			MaxPerSubsystem: f.maxPerSubsystem,
+			Sources:           sources,
+			Out:               f.out,
+			Name:              f.name,
+			MinScore:          f.minScore,
+			PositiveSignals:   strings.ToLower(f.positiveSignals),
+			MinExposureDays:   f.minExposureDays,
+			Positives:         positives,
+			MinFixDate:        minFixDate,
+			CacheDir:          f.cacheDir,
+			MatchKey:          matchKey,
+			MaxPerSubsystem:   f.maxPerSubsystem,
+			FallbackSubsystem: f.fallbackSubsystem,
 		}
 		m, err := cohort.Export(opt)
 		if err != nil {
@@ -143,6 +145,9 @@ arguments is a different cohort.`,
 		fmt.Fprintf(cmd.OutOrStdout(), "Wrote cohort %q: %d cases (%d pairs) from %d candidates across %d source(s) to %s\n",
 			m.Name, m.RecordCount, len(m.Pairs), total, len(sources), f.out)
 		fmt.Fprintf(cmd.OutOrStdout(), "records_sha256 %s\n", m.RecordsSHA256)
+		if m.FallbackPairs > 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "%d of %d pairs matched on subsystem alone; they are not category-balanced and must be reported as a stratum\n", m.FallbackPairs, len(m.Pairs))
+		}
 		if len(m.UnmatchedPositives) > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "Dropped %d positives with no same-cell negative: %v\n", len(m.UnmatchedPositives), m.UnmatchedPositives)
 		}
@@ -154,6 +159,7 @@ func init() {
 	f := &cohortExportFlags
 	cohortExportCmd.Flags().StringArrayVarP(&f.inputs, "input", "i", nil, "Scored candidate JSONL input as [label=]path; repeat for a multi-source cohort")
 	cohortExportCmd.Flags().StringVar(&f.matchKey, "match-key", "", "Cell fields a negative must share with its positive: any subset of category,subsystem,size_band (default all three)")
+	cohortExportCmd.Flags().BoolVar(&f.fallbackSubsystem, "fallback-subsystem", false, "Pair a positive that has no negative in its full-key cell on subsystem alone, nearest category then nearest size band; such pairs record match_key_used [subsystem] and are counted as fallback_pairs")
 	cohortExportCmd.Flags().IntVar(&f.maxPerSubsystem, "max-per-subsystem", 0, "Cap positives per subsystem (0 = no cap); an explicit --positives list exceeding it fails the export")
 	cohortExportCmd.Flags().StringVarP(&f.out, "out", "o", "", "New directory receiving cohort.jsonl and cohort-manifest.json")
 	cohortExportCmd.Flags().StringVar(&f.name, "name", "", "Cohort name recorded in the manifest (e.g. frr-2026-cohort-v1)")

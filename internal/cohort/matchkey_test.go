@@ -274,3 +274,91 @@ func TestManifestVersionAndShape(t *testing.T) {
 		}
 	}
 }
+
+// TestFallbackSubsystemMatching is A9(vi): a positive with no negative in its full
+// key pairs within its subsystem instead, on nearest category then nearest size
+// band, and the pair says so rather than passing as a proper match.
+func TestFallbackSubsystemMatching(t *testing.T) {
+	// bgpd has only MEDIUM negatives, so a HIGH bgpd positive cannot match on the
+	// full key — the real shape of PR 21982 in the H1 cohort.
+	high := cohortRecord(1, "bgpd", 20, 0.9, 1, 0, 0, 400) // HIGH
+	records := []model.PRCandidateRecord{
+		high,
+		cohortRecord(2, "bgpd", 500, 0.4, 0, 0, 0, 400), // MEDIUM, far band
+		cohortRecord(3, "bgpd", 20, 0.4, 0, 0, 0, 400),  // MEDIUM, same band: the pick
+		cohortRecord(4, "bgpd", 20, 0.1, 0, 0, 0, 400),  // LOW, same band: further category
+	}
+	strict := options(t, "strict")
+	strict.MatchKey = []string{"category", "subsystem"}
+	if _, err := export(records, nil, strict); err == nil || !strings.Contains(err.Error(), "no matched pairs") {
+		t.Fatalf("without the fallback this positive must stay unmatched: %v", err)
+	}
+
+	opt := options(t, "fallback")
+	opt.MatchKey = []string{"category", "subsystem"}
+	opt.FallbackSubsystem = true
+	m, err := export(records, nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Pairs) != 1 || m.Pairs[0].Positive != 1 || m.Pairs[0].Negative != 3 {
+		t.Fatalf("pairs = %+v; want PR 1 paired with the nearest-category, same-band negative 3", m.Pairs)
+	}
+	p := m.Pairs[0]
+	if strings.Join(p.MatchKeyUsed, ",") != "subsystem" || m.FallbackPairs != 1 {
+		t.Errorf("a relaxed pair must say so: match_key_used=%v fallback_pairs=%d", p.MatchKeyUsed, m.FallbackPairs)
+	}
+	if p.Cell.Category != "HIGH" || p.NegativeCell.Category != "MEDIUM" {
+		t.Errorf("both cells must be visible on the pair: %+v / %+v", p.Cell, p.NegativeCell)
+	}
+	if !m.Filters.FallbackSubsystem || m.Matching.Fallback == "" {
+		t.Errorf("the fallback must be recorded in the manifest: %+v %q", m.Filters, m.Matching.Fallback)
+	}
+
+	// A proper match is never overridden by the fallback.
+	proper := append([]model.PRCandidateRecord{}, records...)
+	proper = append(proper, cohortRecord(5, "bgpd", 20, 0.9, 0, 0, 0, 400)) // HIGH, same band
+	opt2 := options(t, "proper")
+	opt2.MatchKey = []string{"category", "subsystem"}
+	opt2.FallbackSubsystem = true
+	m2, err := export(proper, nil, opt2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2.Pairs) != 1 || m2.Pairs[0].Negative != 5 || m2.FallbackPairs != 0 {
+		t.Errorf("a full-key match must win: pairs=%+v fallback=%d", m2.Pairs, m2.FallbackPairs)
+	}
+	if strings.Join(m2.Pairs[0].MatchKeyUsed, ",") != "category,subsystem" {
+		t.Errorf("match_key_used = %v", m2.Pairs[0].MatchKeyUsed)
+	}
+}
+
+// TestFallbackCannotInventANegative: a subsystem with no negative at all leaves the
+// positive unmatched, and an explicit list says why.
+func TestFallbackCannotInventANegative(t *testing.T) {
+	records := []model.PRCandidateRecord{
+		cohortRecord(1, "bfdd", 20, 0.9, 1, 0, 0, 400), // no bfdd negative exists
+		cohortRecord(2, "bgpd", 20, 0.7, 1, 0, 0, 400),
+		cohortRecord(3, "bgpd", 20, 0.7, 0, 0, 0, 400),
+	}
+	opt := options(t, "none")
+	opt.MatchKey = []string{"category", "subsystem"}
+	opt.FallbackSubsystem = true
+	m, err := export(records, nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Pairs) != 1 || m.Pairs[0].Positive != 2 {
+		t.Fatalf("pairs = %+v", m.Pairs)
+	}
+	if len(m.UnmatchedPositives) != 1 || m.UnmatchedPositives[0] != 1 || m.FallbackPairs != 0 {
+		t.Errorf("the bfdd positive must stay unmatched: %v fallback=%d", m.UnmatchedPositives, m.FallbackPairs)
+	}
+	explicit := options(t, "explicit")
+	explicit.MatchKey = []string{"category", "subsystem"}
+	explicit.FallbackSubsystem = true
+	explicit.Positives = []int{1}
+	if _, err := export(records, nil, explicit); err == nil || !strings.Contains(err.Error(), "holds no zero-signal PR at all") {
+		t.Errorf("an explicit unmatchable positive must fail closed and say why: %v", err)
+	}
+}

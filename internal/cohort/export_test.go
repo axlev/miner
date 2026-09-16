@@ -319,8 +319,13 @@ func TestMatchingStaysInsideTheCellAndPrefersNearestScore(t *testing.T) {
 		t.Fatalf("pairs = %+v, want %+v", m.Pairs, want)
 	}
 	for i := range want {
-		if m.Pairs[i] != want[i] {
-			t.Errorf("pair %d = %+v, want %+v", i, m.Pairs[i], want[i])
+		g := m.Pairs[i]
+		if g.ID != want[i].ID || g.Positive != want[i].Positive || g.Negative != want[i].Negative || g.Cell != want[i].Cell {
+			t.Errorf("pair %d = %+v, want %+v", i, g, want[i])
+		}
+		// Without the fallback every pair matched on the full key.
+		if strings.Join(g.MatchKeyUsed, ",") != "category,subsystem,size_band" {
+			t.Errorf("pair %d match_key_used = %v", i, g.MatchKeyUsed)
 		}
 	}
 	if len(m.UnmatchedPositives) != 1 || m.UnmatchedPositives[0] != 17 {
