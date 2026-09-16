@@ -5,6 +5,31 @@ it rules out. `AGENTS.md` names this file as a source of truth and points here i
 carrying the log, so it stays out of every session's starting context; read it before
 changing anything it constrains, and append new entries at the top of the list below.
 
+- 2026-09-16: The engine stopped failing on identifier SHAPES in `reviewer-metadata/v2`
+  text (`engine-runner` c6a8d14) and the guarantee moved to an exact keys-based
+  preflight, `contamscan -mode inputs`. The validator runs on the path a reviewer's
+  bundle takes, so it has no contamination keys and can only match a shape; under v2
+  the miner admits title and description only when their edit history proves them
+  pre-merge, and pre-merge prose legitimately carries commit SHAs and PR numbers. Eight
+  of the first forty H1 bundles were that shape, 38 warnings in all — 21 of them one
+  backport description citing every commit it carries. None matched its own case's
+  fixing identifiers, checked both by the preflight and independently here against
+  `fixing_shas` and `fixing_pr_numbers`. Consequence for this repo: a cohort is not
+  publishable on a clean `cohort-verify` alone. The preflight is a precondition, and a
+  case with no keys file is unchecked rather than clean.
+- 2026-09-16: The preflight is run over a staged reviewer-only copy, and publication is
+  a rename of that same directory. Two reasons, both learned by hitting them. Inputs
+  mode enumerates every `case-*` directory under `-cohort` and reports one with no keys
+  as unchecked, so pointing it at the export directory — which holds 40
+  `case-<id>-evaluator-only` siblings — fails by construction. And checking one copy
+  then publishing a second re-derived copy leaves nothing proving the two agree;
+  renaming the checked tree makes the published bytes the checked bytes.
+- 2026-09-16: `cohort-verify` now carries the validator's recorded warnings into its
+  report (`fcda503`). It parsed only `violations`, and `runBench` returned as soon as
+  the process exited zero, so a passing bundle's report was never opened and every
+  warning was discarded. That was cosmetic until identifier hits became warnings;
+  after c6a8d14 the report was the only place those findings survived, and it was
+  dropping them. A warning never changes a verdict.
 - 2026-09-16: `refresh-bundles` re-fetches a whole cache bundle rather than patching
   sections. The 2024 cache was collected 2026-08-23, before issue events, body edits
   and paginated comments existed, so under `reviewer-metadata/v2` every 2024 case
