@@ -32,6 +32,11 @@ type CaseResult struct {
 	// BenchCommand is the exact invocation that validates this bundle, always
 	// populated so it can be run by hand when the engine checkout is not wired in.
 	BenchCommand string
+	// Warnings are findings the engine's validator RECORDED rather than failed on.
+	// They are carried here because a passing bundle can still carry them, and the
+	// cohort document is required to record each one per case. Reading only
+	// violations made those findings invisible to every consumer of this report.
+	Warnings []string
 }
 
 // OK reports whether this case is fit for a cohort: exported cleanly, and either
@@ -145,7 +150,9 @@ func Verify(ctx context.Context, opt VerifyOptions) ([]CaseResult, error) {
 
 		if opt.BenchRepo != "" {
 			res.ValidationRun = true
-			if err := runBench(ctx, opt.BenchRepo, bundle, res.CaseID, opt.OutDir); err != nil {
+			warnings, err := runBench(ctx, opt.BenchRepo, bundle, res.CaseID, opt.OutDir)
+			res.Warnings = warnings
+			if err != nil {
 				res.Err = firstLine(err.Error())
 			} else {
 				res.Validated = true
@@ -177,18 +184,18 @@ func writeRecords(path string, records []model.PRCandidateRecord) error {
 // directory set to the engine checkout, so a relative path would resolve against that
 // repository instead of this one: bench would fail to find the bundle and would write
 // its results into the engine's tree. Both happened before this was fixed.
-func runBench(ctx context.Context, benchRepo, bundle, caseID, outDir string) error {
+func runBench(ctx context.Context, benchRepo, bundle, caseID, outDir string) ([]string, error) {
 	absBundle, err := filepath.Abs(bundle)
 	if err != nil {
-		return fmt.Errorf("resolve bundle path: %w", err)
+		return nil, fmt.Errorf("resolve bundle path: %w", err)
 	}
 	resultsRoot, err := filepath.Abs(filepath.Join(outDir, "bench-results"))
 	if err != nil {
-		return fmt.Errorf("resolve results root: %w", err)
+		return nil, fmt.Errorf("resolve results root: %w", err)
 	}
 	workspaceRoot, err := filepath.Abs(filepath.Join(outDir, "bench-workspace"))
 	if err != nil {
-		return fmt.Errorf("resolve workspace root: %w", err)
+		return nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
 	cmd := exec.CommandContext(ctx, "go", "run", "./cmd/bench",
 		"-bundle", absBundle, "-case-id", caseID,
@@ -196,39 +203,66 @@ func runBench(ctx context.Context, benchRepo, bundle, caseID, outDir string) err
 		"-workspace-root", workspaceRoot)
 	cmd.Dir = benchRepo
 	out, err := cmd.CombinedOutput()
+	// The report is read whether or not the run succeeded. A bundle that passes can
+	// still carry recorded warnings, and returning early on success dropped them: the
+	// engine records an identifier hit in reviewer-metadata/v2 rather than failing it,
+	// so the only place that finding survives is this report.
+	report, rerr := findValidationReport(resultsRoot, caseID)
+	var warnings []string
+	if rerr == nil {
+		for _, w := range report.Warnings {
+			warnings = append(warnings, describeFinding(w, true))
+		}
+	}
 	if err == nil {
-		return nil
+		return warnings, nil
 	}
 	// A run can fail well past boundary validation (no fixture scenario, no adapter,
 	// no credentials). Only a boundary rejection disqualifies a case here, so the
 	// validator's own report is what gets consulted, not the process exit code.
-	if report, rerr := findValidationReport(resultsRoot, caseID); rerr == nil {
+	if rerr == nil {
 		if report.Result == "pass" {
-			return nil
+			return warnings, nil
 		}
 		var parts []string
 		for _, v := range report.Violations {
-			if v.Path != "" {
-				parts = append(parts, fmt.Sprintf("%s (%s)", v.Rule, v.Path))
-				continue
-			}
-			parts = append(parts, v.Rule)
+			parts = append(parts, describeFinding(v, false))
 		}
-		return fmt.Errorf("boundary validation failed: %s", strings.Join(parts, "; "))
+		return warnings, fmt.Errorf("boundary validation failed: %s", strings.Join(parts, "; "))
 	}
-	return fmt.Errorf("bench did not produce a boundary-validation report: %s", firstLine(strings.TrimSpace(string(out))))
+	return warnings, fmt.Errorf("bench did not produce a boundary-validation report: %s", firstLine(strings.TrimSpace(string(out))))
+}
+
+// describeFinding renders one validator finding. Violations keep their existing
+// terse "rule (path)" form; warnings carry the detail, because a warning is only
+// useful to the reader who has to record what was matched and where.
+func describeFinding(f finding, withDetail bool) string {
+	s := f.Rule
+	if f.Path != "" {
+		s = fmt.Sprintf("%s (%s)", f.Rule, f.Path)
+	}
+	if withDetail && f.Detail != "" {
+		s += ": " + f.Detail
+	}
+	return s
 }
 
 // validationReport mirrors only the fields needed to read a verdict. It is
 // deliberately a loose, additive-tolerant view of the engine's schema: this repo
 // consumes that report, it does not define it.
 type validationReport struct {
-	Result     string `json:"result"`
-	Violations []struct {
-		Rule   string `json:"rule"`
-		Path   string `json:"path"`
-		Detail string `json:"detail"`
-	} `json:"violations"`
+	Result     string    `json:"result"`
+	Violations []finding `json:"violations"`
+	// Warnings are findings the engine recorded without failing on. They are not
+	// a verdict and must not change one, but they are required output: the cohort
+	// document records each one per case.
+	Warnings []finding `json:"warnings"`
+}
+
+type finding struct {
+	Rule   string `json:"rule"`
+	Path   string `json:"path"`
+	Detail string `json:"detail"`
 }
 
 func findValidationReport(resultsRoot, caseID string) (validationReport, error) {
@@ -283,8 +317,8 @@ func RenderVerification(results []CaseResult, validationRun bool) string {
 		sb.WriteString("a case is not cohort-ready until its bundle passes the engine's validator.  \n\n")
 	}
 
-	sb.WriteString("| PR | Case ID | Cutoff | Exported | Validated | Notes |\n")
-	sb.WriteString("| ---: | :--- | :--- | :--- | :--- | :--- |\n")
+	sb.WriteString("| PR | Case ID | Cutoff | Exported | Validated | Warnings | Notes |\n")
+	sb.WriteString("| ---: | :--- | :--- | :--- | :--- | ---: | :--- |\n")
 	for _, r := range results {
 		exported := "yes"
 		if !r.Exported {
@@ -302,8 +336,25 @@ func RenderVerification(results []CaseResult, validationRun bool) string {
 		if !r.Cutoff.IsZero() {
 			cutoff = r.Cutoff.Format(time.RFC3339)
 		}
-		fmt.Fprintf(&sb, "| %d | `%s` | %s | %s | %s | %s |\n",
-			r.PR, r.CaseID, cutoff, exported, validated, truncate(notes, 100))
+		fmt.Fprintf(&sb, "| %d | `%s` | %s | %s | %s | %d | %s |\n",
+			r.PR, r.CaseID, cutoff, exported, validated, len(r.Warnings), truncate(notes, 100))
+	}
+
+	// Warnings are listed in full rather than counted only. A recorded finding that
+	// no one can read is the same as one that was never recorded.
+	warned := 0
+	for _, r := range results {
+		warned += len(r.Warnings)
+	}
+	if warned > 0 {
+		fmt.Fprintf(&sb, "\n## Recorded warnings (%d)\n\n", warned)
+		sb.WriteString("The engine recorded these without failing on them. They do not affect a verdict,\n")
+		sb.WriteString("and each one belongs in the cohort document against its case.\n\n")
+		for _, r := range results {
+			for _, w := range r.Warnings {
+				fmt.Fprintf(&sb, "- PR %d `%s` — %s\n", r.PR, r.CaseID, w)
+			}
+		}
 	}
 
 	if !validationRun {

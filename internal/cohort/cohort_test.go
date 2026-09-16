@@ -485,3 +485,55 @@ func TestCaseResultOKTreatsUnvalidatedHonestly(t *testing.T) {
 		t.Errorf("summary miscounts a failed case:\n%s", md)
 	}
 }
+
+// A warning is a finding the engine recorded without failing on it. It must not
+// change a verdict, and it must survive into the rendered report: the cohort
+// document is required to carry each one against its case, and a warning nobody
+// can read is the same as one that was never recorded.
+func TestRenderVerificationCarriesRecordedWarnings(t *testing.T) {
+	results := []CaseResult{
+		{
+			PR: 16672, CaseID: "case-492381809029295b", Exported: true,
+			ValidationRun: true, Validated: true,
+			Warnings: []string{
+				`oracle_shaped_content (reviewer/metadata.json): field "description" contains commit SHA abcdef1234567890`,
+			},
+		},
+		{PR: 21074, CaseID: "case-e536d8e5bf2d889e", Exported: true, ValidationRun: true, Validated: true},
+	}
+	md := RenderVerification(results, true)
+
+	if !strings.Contains(md, "2 of 2 cases usable") {
+		t.Errorf("a recorded warning must not make a case unusable:\n%s", md)
+	}
+	if !strings.Contains(md, "## Recorded warnings (1)") {
+		t.Errorf("warnings section missing:\n%s", md)
+	}
+	if !strings.Contains(md, `field "description" contains commit SHA abcdef1234567890`) {
+		t.Errorf("warning detail was dropped; the cohort document cannot record what was matched:\n%s", md)
+	}
+	if !strings.Contains(md, "PR 16672 `case-492381809029295b`") {
+		t.Errorf("warning is not attributed to its case:\n%s", md)
+	}
+
+	// A case with no warnings must not gain a section.
+	clean := RenderVerification(results[1:], true)
+	if strings.Contains(clean, "Recorded warnings") {
+		t.Errorf("a clean run must not render an empty warnings section:\n%s", clean)
+	}
+}
+
+func TestDescribeFinding(t *testing.T) {
+	f := finding{Rule: "oracle_shaped_content", Path: "reviewer/metadata.json", Detail: "field \"title\" contains PR #123"}
+	// Violations keep their terse existing form so the failure message is unchanged.
+	if got, want := describeFinding(f, false), "oracle_shaped_content (reviewer/metadata.json)"; got != want {
+		t.Errorf("violation form = %q, want %q", got, want)
+	}
+	// Warnings carry the detail: what was matched is the whole point of recording it.
+	if got := describeFinding(f, true); !strings.Contains(got, "field \"title\" contains PR #123") {
+		t.Errorf("warning form dropped the detail: %q", got)
+	}
+	if got, want := describeFinding(finding{Rule: "r"}, true), "r"; got != want {
+		t.Errorf("pathless finding = %q, want %q", got, want)
+	}
+}
