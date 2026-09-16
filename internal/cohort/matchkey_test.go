@@ -362,3 +362,104 @@ func TestFallbackCannotInventANegative(t *testing.T) {
 		t.Errorf("an explicit unmatchable positive must fail closed and say why: %v", err)
 	}
 }
+
+// TestExplicitNegativesAreTheWholePool: when the evaluator names the negatives, the
+// sampler chooses among exactly those and every one of them must be used.
+func TestExplicitNegativesAreTheWholePool(t *testing.T) {
+	records := []model.PRCandidateRecord{
+		cohortRecord(1, "bgpd", 20, 0.7, 1, 0, 0, 400),
+		cohortRecord(2, "bgpd", 20, 0.7, 0, 0, 0, 400), // the sampler would prefer this
+		cohortRecord(3, "bgpd", 25, 0.7, 0, 0, 0, 400), // the evaluator picks this
+	}
+	sampled := options(t, "sampled")
+	m0, err := export(records, nil, sampled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m0.Pairs[0].Negative != 2 {
+		t.Fatalf("precondition: the sampler prefers PR 2, got %d", m0.Pairs[0].Negative)
+	}
+
+	opt := options(t, "explicit")
+	opt.Negatives = []int{3}
+	m, err := export(records, nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Pairs) != 1 || m.Pairs[0].Negative != 3 {
+		t.Fatalf("the evaluator's pick must win over the sampler's: %+v", m.Pairs)
+	}
+	if len(m.Filters.Negatives) != 1 || m.Filters.Negatives[0] != 3 {
+		t.Errorf("the explicit list must be recorded: %v", m.Filters.Negatives)
+	}
+	if m.Exclusions.NotInNegativeList != 1 {
+		t.Errorf("the unpicked negative must be counted, not silently dropped: %+v", m.Exclusions)
+	}
+}
+
+func TestExplicitNegativesFailClosed(t *testing.T) {
+	base := []model.PRCandidateRecord{
+		cohortRecord(1, "bgpd", 20, 0.7, 1, 0, 0, 400),  // positive
+		cohortRecord(2, "bgpd", 20, 0.7, 0, 0, 0, 400),  // clean negative
+		cohortRecord(3, "bgpd", 20, 0.7, 0, 0, 1, 400),  // weak signal: not clean
+		cohortRecord(4, "zebra", 20, 0.7, 0, 0, 0, 400), // clean, other subsystem
+	}
+	uncounted := cohortRecord(5, "bgpd", 20, 0.7, 0, 0, 0, 400)
+	uncounted.Provenance.CorrelatedBy = ""
+	uninspected := cohortRecord(6, "bgpd", 20, 0.7, 0, 0, 0, 400)
+	uninspected.Retrospective.UninspectedCommitCount = 2
+	records := append(append([]model.PRCandidateRecord{}, base...), uncounted, uninspected)
+
+	for _, c := range []struct {
+		name string
+		negs []int
+		want string
+	}{
+		{"names a positive", []int{1, 2}, "carries corrective evidence"},
+		{"names a weak-signal record", []int{3}, "weak corrective evidence"},
+		{"names an uncounted record", []int{5}, "no provenance.correlated_by"},
+		{"names an uninspected record", []int{6}, "could not be inspected"},
+		{"names an absent PR", []int{99}, "not in the input"},
+		{"leaves one unpaired", []int{2, 4}, "left unpaired"},
+	} {
+		opt := options(t, strings.ReplaceAll(c.name, " ", "-"))
+		opt.Negatives = c.negs
+		_, err := export(records, nil, opt)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want containing %q", c.name, err, c.want)
+		}
+		if _, statErr := os.Lstat(opt.Out); !os.IsNotExist(statErr) {
+			t.Errorf("%s: output written despite the refusal", c.name)
+		}
+	}
+}
+
+// TestExplicitNegativesCannotHideAFullKeyMatch: a list that omits the one negative
+// sharing the positive's full key must not silently produce a fallback pair.
+func TestExplicitNegativesCannotHideAFullKeyMatch(t *testing.T) {
+	records := []model.PRCandidateRecord{
+		cohortRecord(1, "bgpd", 20, 0.9, 1, 0, 0, 400), // HIGH
+		cohortRecord(2, "bgpd", 20, 0.9, 0, 0, 0, 400), // HIGH: the full-key match
+		cohortRecord(3, "bgpd", 20, 0.4, 0, 0, 0, 400), // MEDIUM
+	}
+	opt := options(t, "hidden")
+	opt.MatchKey = []string{"category", "subsystem"}
+	opt.FallbackSubsystem = true
+	opt.Negatives = []int{3}
+	_, err := export(records, nil, opt)
+	if err == nil || !strings.Contains(err.Error(), "left out of the negatives list") {
+		t.Errorf("err = %v, want a refusal naming the omitted full-key negative", err)
+	}
+	// Listing the full-key negative pairs normally, with no fallback.
+	ok := options(t, "listed")
+	ok.MatchKey = []string{"category", "subsystem"}
+	ok.FallbackSubsystem = true
+	ok.Negatives = []int{2}
+	m, err := export(records, nil, ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.FallbackPairs != 0 || m.Pairs[0].Negative != 2 {
+		t.Errorf("pairs = %+v fallback = %d", m.Pairs, m.FallbackPairs)
+	}
+}

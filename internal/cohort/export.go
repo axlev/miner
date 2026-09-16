@@ -76,6 +76,11 @@ type ExportOptions struct {
 	PositiveSignals string // "strong" or "any"
 	MinExposureDays int
 	Positives       []int // explicit positive shortlist; nil means every qualifying record
+	// Negatives is the evaluator's explicit negative picks. When set, the negative
+	// pool is exactly these records: a named negative that does not qualify, is
+	// absent, or ends up unused fails the export. A cohort whose negatives were
+	// chosen by reading them must not quietly ship one the sampler preferred.
+	Negatives []int
 	// MinFixDate, when non-zero, admits a positive only if its earliest corrective
 	// signal is at or after this instant (pre-registration §3: the fix must postdate
 	// the treatment model's training cutoff). Recorded in the manifest.
@@ -234,6 +239,7 @@ type Exclusions struct {
 	BelowMinScore        int `json:"below_min_score"`
 	PartialEvidence      int `json:"partial_evidence"`
 	NotInPositiveList    int `json:"not_in_positive_list"`
+	NotInNegativeList    int `json:"not_in_negative_list"`
 	OverSubsystemQuota   int `json:"over_subsystem_quota"`
 	UncountedNegative    int `json:"uncounted_negative"`   // zero signals, but no correlated_by: unverifiable
 	UninspectedNegative  int `json:"uninspected_negative"` // zero signals, but some diffs were not inspected
@@ -280,6 +286,7 @@ type Manifest struct {
 		PositiveSignals   string  `json:"positive_signals"`
 		MinExposureDays   int     `json:"min_exposure_days"`
 		Positives         []int   `json:"positives"`
+		Negatives         []int   `json:"negatives"`
 		MinFixDate        string  `json:"min_fix_date"` // RFC3339, or "" when not applied
 		MaxPerSubsystem   int     `json:"max_per_subsystem"`
 		FallbackSubsystem bool    `json:"fallback_subsystem"`
@@ -494,6 +501,8 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 	}
 	m.Filters.Positives = append([]int{}, opt.Positives...)
 	sort.Ints(m.Filters.Positives)
+	m.Filters.Negatives = append([]int{}, opt.Negatives...)
+	sort.Ints(m.Filters.Negatives)
 	m.Filters.MaxPerSubsystem = opt.MaxPerSubsystem
 	m.Filters.FallbackSubsystem = opt.FallbackSubsystem
 	m.Matching.Key = append([]string{}, opt.MatchKey...)
@@ -513,11 +522,20 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 	for _, pr := range opt.Positives {
 		explicit[pr] = true
 	}
+	explicitNeg := map[int]bool{}
+	for _, pr := range opt.Negatives {
+		explicitNeg[pr] = true
+	}
 
 	seen := map[int]string{}
 	var positives []classified
 	negatives := map[string][]classified{}
 	bySubsystem := map[string][]classified{}
+	// allByKey counts counted-clean negatives per full key across the whole input,
+	// the explicit list's omissions included, so a fallback taken only because the
+	// list left out a viable full-key negative is an error rather than a quietly
+	// relaxed pair.
+	allByKey := map[string]int{}
 	perSubsystem := map[string]int{}
 	for si := range opt.Sources {
 		src := &opt.Sources[si]
@@ -561,14 +579,27 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 				}
 				switch {
 				case !correlationCounted(rec):
+					if explicitNeg[pr] {
+						return nil, nil, fmt.Errorf("PR #%d was listed as a negative but its record carries no provenance.correlated_by, so its zero-signal status is unverifiable; re-correlate it on a counting build", pr)
+					}
 					m.Exclusions.UncountedNegative++
 				case rec.Retrospective.UninspectedCommitCount > 0:
+					if explicitNeg[pr] {
+						return nil, nil, fmt.Errorf("PR #%d was listed as a negative but %d commit diffs in its window could not be inspected, so \"no evidence\" is not established for it", pr, rec.Retrospective.UninspectedCommitCount)
+					}
 					m.Exclusions.UninspectedNegative++
+				case len(explicitNeg) > 0 && !explicitNeg[pr]:
+					allByKey[ck]++
+					m.Exclusions.NotInNegativeList++
 				default:
+					allByKey[ck]++
 					negatives[ck] = append(negatives[ck], c)
 					bySubsystem[c.cell.Subsystem] = append(bySubsystem[c.cell.Subsystem], c)
 				}
 			case isPositive(rec, opt.PositiveSignals):
+				if explicitNeg[pr] {
+					return nil, nil, fmt.Errorf("PR #%d was listed as a negative but carries corrective evidence (%d strong, %d medium); it cannot be a CLEAN case", pr, len(rec.Retrospective.StrongSignals), len(rec.Retrospective.MediumSignals))
+				}
 				if len(explicit) > 0 && !explicit[pr] {
 					m.Exclusions.NotInPositiveList++
 					continue
@@ -606,6 +637,9 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 				if explicit[pr] {
 					return nil, nil, fmt.Errorf("PR #%d was listed as a positive but its evidence does not meet --positive-signals=%s", pr, opt.PositiveSignals)
 				}
+				if explicitNeg[pr] {
+					return nil, nil, fmt.Errorf("PR #%d was listed as a negative but carries weak corrective evidence; a negative must have none at any tier", pr)
+				}
 				m.Exclusions.PartialEvidence++
 			}
 		}
@@ -613,6 +647,11 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 	for pr := range explicit {
 		if _, ok := seen[pr]; !ok {
 			return nil, nil, fmt.Errorf("PR #%d was listed as a positive but is not in the input", pr)
+		}
+	}
+	for pr := range explicitNeg {
+		if _, ok := seen[pr]; !ok {
+			return nil, nil, fmt.Errorf("PR #%d was listed as a negative but is not in the input", pr)
 		}
 	}
 
@@ -630,6 +669,10 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 		pool := negatives[p.cell.key(opt.MatchKey)]
 		best := pick(p, pool, used, closer)
 		keyUsed := opt.MatchKey
+		if best < 0 && opt.FallbackSubsystem && len(explicitNeg) > 0 && allByKey[p.cell.key(opt.MatchKey)] > 0 {
+			return nil, nil, fmt.Errorf("PR #%d would pair by subsystem fallback, but a counted-clean negative sharing its full key %s exists in the input and was left out of the negatives list; include it, or drop the positive if the fallback was intended",
+				p.rec.Original.Number, p.cell.key(opt.MatchKey))
+		}
 		if best < 0 && opt.FallbackSubsystem {
 			// No negative shares the full key. Rather than drop the positive, pair it
 			// within its subsystem on nearest category, then nearest size band. The
@@ -673,6 +716,18 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 			if !used[n.rec.Original.Number] {
 				m.Exclusions.UnusedNegative++
 			}
+		}
+	}
+	if len(explicitNeg) > 0 {
+		var idle []int
+		for pr := range explicitNeg {
+			if !used[pr] {
+				idle = append(idle, pr)
+			}
+		}
+		sort.Ints(idle)
+		if len(idle) > 0 {
+			return nil, nil, fmt.Errorf("%d listed negatives were left unpaired: %v; a cohort whose negatives were chosen by reading them must not ship with some of them dropped", len(idle), idle)
 		}
 	}
 

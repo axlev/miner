@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,12 +16,12 @@ import (
 )
 
 var cohortExportFlags struct {
-	inputs                                                      []string
-	out, name, positiveSignals, positives, minFixDate, cacheDir string
-	matchKey                                                    string
-	fallbackSubsystem                                           bool
-	minScore                                                    float64
-	minExposureDays, maxPerSubsystem                            int
+	inputs                                                                 []string
+	out, name, positiveSignals, positives, negatives, minFixDate, cacheDir string
+	matchKey                                                               string
+	fallbackSubsystem                                                      bool
+	minScore                                                               float64
+	minExposureDays, maxPerSubsystem                                       int
 }
 
 // parseSource accepts "label=path" or a bare path, whose label is then the file's
@@ -94,17 +96,13 @@ arguments is a different cohort.`,
 		if len(sources) == 0 {
 			return fmt.Errorf("--input is required (repeat it for a multi-source cohort)")
 		}
-		var positives []int
-		for _, part := range strings.Split(f.positives, ",") {
-			part = strings.TrimSpace(part)
-			if part == "" {
-				continue
-			}
-			n, err := strconv.Atoi(part)
-			if err != nil {
-				return fmt.Errorf("invalid --positives entry %q: %w", part, err)
-			}
-			positives = append(positives, n)
+		positives, err := parsePRList(f.positives, "positives")
+		if err != nil {
+			return err
+		}
+		negatives, err := parsePRList(f.negatives, "negatives")
+		if err != nil {
+			return err
 		}
 		var minFixDate time.Time
 		if f.minFixDate != "" {
@@ -128,6 +126,7 @@ arguments is a different cohort.`,
 			PositiveSignals:   strings.ToLower(f.positiveSignals),
 			MinExposureDays:   f.minExposureDays,
 			Positives:         positives,
+			Negatives:         negatives,
 			MinFixDate:        minFixDate,
 			CacheDir:          f.cacheDir,
 			MatchKey:          matchKey,
@@ -168,8 +167,119 @@ func init() {
 	cohortExportCmd.Flags().IntVar(&f.minExposureDays, "min-exposure-days", cohort.DefaultMinExposureDays, "Minimum days between merged_at and observation_end, both classes")
 	cohortExportCmd.Flags().StringVar(&f.cacheDir, "cache-dir", "", "Collect-time cache root; when set, each case records the reviewer-metadata/v2 admission outcome per field")
 	cohortExportCmd.Flags().StringVar(&f.minFixDate, "min-fix-date", "", "Admit a positive only if its earliest corrective signal is on or after this date (YYYY-MM-DD)")
+	cohortExportCmd.Flags().StringVar(&f.negatives, "negatives", "", "Explicit negative picks: comma list, a file of one number per line, or JSON (array, or object with a \"negatives\" array of numbers or of objects carrying \"pr\"). The negative pool is then exactly these, and every one must be used")
 	cohortExportCmd.Flags().StringVar(&f.positives, "positives", "", "Comma-separated explicit positive shortlist; each must qualify and match, or the export fails")
 	for _, name := range []string{"input", "out", "name"} {
 		_ = cohortExportCmd.MarkFlagRequired(name)
 	}
+}
+
+// parsePRList reads an explicit PR list in any form the evaluator produces: a comma
+// list, a file of one number per line, a JSON array, or a JSON object with a named
+// array whose entries are numbers or objects carrying a "pr" field. Empty means none.
+func parsePRList(arg, field string) ([]int, error) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return nil, nil
+	}
+	set := map[int]bool{}
+	add := func(n int) error {
+		if n <= 0 {
+			return fmt.Errorf("--%s contains an invalid PR number %d", field, n)
+		}
+		set[n] = true
+		return nil
+	}
+	if st, statErr := os.Stat(arg); statErr == nil && !st.IsDir() {
+		data, err := os.ReadFile(arg)
+		if err != nil {
+			return nil, err
+		}
+		trimmed := strings.TrimSpace(string(data))
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			var decoded any
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				return nil, fmt.Errorf("parse %q: %w", arg, err)
+			}
+			list, err := prNumbersFrom(decoded, field)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", arg, err)
+			}
+			for _, n := range list {
+				if err := add(n); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			for _, line := range strings.Split(trimmed, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				n, err := strconv.Atoi(line)
+				if err != nil {
+					return nil, fmt.Errorf("%s: invalid PR number %q", arg, line)
+				}
+				if err := add(n); err != nil {
+					return nil, err
+				}
+			}
+		}
+	} else {
+		for _, part := range strings.Split(arg, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			n, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid --%s entry %q: %w", field, part, err)
+			}
+			if err := add(n); err != nil {
+				return nil, err
+			}
+		}
+	}
+	out := make([]int, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+// prNumbersFrom pulls PR numbers out of decoded JSON. An object is searched for the
+// named array first, so freeze-list.json yields exactly the class asked for.
+func prNumbersFrom(v any, field string) ([]int, error) {
+	switch t := v.(type) {
+	case []any:
+		var out []int
+		for _, e := range t {
+			switch n := e.(type) {
+			case float64:
+				out = append(out, int(n))
+			case map[string]any:
+				got := false
+				for _, k := range []string{"pr", "number", field} {
+					if x, ok := n[k].(float64); ok {
+						out = append(out, int(x))
+						got = true
+						break
+					}
+				}
+				if !got {
+					return nil, fmt.Errorf("an entry carries no pr/number field")
+				}
+			default:
+				return nil, fmt.Errorf("an entry is neither a number nor an object")
+			}
+		}
+		return out, nil
+	case map[string]any:
+		if inner, ok := t[field]; ok {
+			return prNumbersFrom(inner, field)
+		}
+		return nil, fmt.Errorf("object has no %q array", field)
+	}
+	return nil, fmt.Errorf("expected a JSON array or object")
 }
