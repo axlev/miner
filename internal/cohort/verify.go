@@ -40,6 +40,10 @@ func (c CaseResult) OK() bool { return c.Exported && c.Err == "" && (!c.Validati
 
 // VerifyOptions configures a cohort verification pass.
 type VerifyOptions struct {
+	// Records is the union of every source the cohort drew on. A cohort spanning two
+	// collection windows must be verified against both: given only one, every case
+	// from the other reports "not present in the input" and the run looks like 25
+	// broken cases rather than one missing file.
 	Records []model.PRCandidateRecord
 	PRs     []int
 	// Repo is the local Git clone the snapshot and diff are built from.

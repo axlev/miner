@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"miner/internal/cohort"
+	"miner/internal/model"
 	"miner/internal/storage"
 )
 
@@ -72,7 +73,8 @@ given to a reviewer or wired into an engine-visible path.`,
 }
 
 var cohortVerifyFlags struct {
-	input, repo, cacheDir, out, cutoff, benchRepo, prs, metadataVersion string
+	inputs                                                       []string
+	repo, cacheDir, out, cutoff, benchRepo, prs, metadataVersion string
 }
 
 var cohortVerifyCmd = &cobra.Command{
@@ -97,9 +99,27 @@ repo does not assume a sibling checkout exists.
 Each case is pinned to its own merged_at unless --cutoff overrides every case at once.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		f := cohortVerifyFlags
-		records, err := storage.ReadJSONL(f.input)
-		if err != nil {
-			return fmt.Errorf("read candidates: %w", err)
+		var records []model.PRCandidateRecord
+		seen := map[int]string{}
+		for _, in := range f.inputs {
+			path := in
+			if i := strings.Index(in, "="); i > 0 && !strings.Contains(in[:i], "/") {
+				path = in[i+1:]
+			}
+			recs, err := storage.ReadJSONL(path)
+			if err != nil {
+				return fmt.Errorf("read candidates: %w", err)
+			}
+			for _, r := range recs {
+				if prev, dup := seen[r.Original.Number]; dup {
+					return fmt.Errorf("PR #%d appears in both %q and %q; refusing to choose", r.Original.Number, prev, path)
+				}
+				seen[r.Original.Number] = path
+			}
+			records = append(records, recs...)
+		}
+		if len(records) == 0 {
+			return fmt.Errorf("--input is required (repeat it for a cohort spanning more than one window)")
 		}
 		var prs []int
 		for _, part := range strings.Split(f.prs, ",") {
@@ -159,7 +179,7 @@ func init() {
 	cohortReportCmd.Flags().StringVar(&r.format, "format", "markdown", "Output format: markdown or csv")
 
 	v := &cohortVerifyFlags
-	cohortVerifyCmd.Flags().StringVarP(&v.input, "input", "i", "./data/candidates.jsonl", "Scored candidate JSONL input")
+	cohortVerifyCmd.Flags().StringArrayVarP(&v.inputs, "input", "i", nil, "Scored candidate JSONL input as [label=]path; repeat once per window for a multi-source cohort")
 	cohortVerifyCmd.Flags().StringVar(&v.repo, "repo", "", "Local Git repository the snapshot and diff are built from")
 	cohortVerifyCmd.Flags().StringVar(&v.cacheDir, "cache-dir", "", "Collect-time cache root holding per-PR provider bundles")
 	cohortVerifyCmd.Flags().StringVarP(&v.out, "out", "o", "", "New directory receiving one bundle per case")
