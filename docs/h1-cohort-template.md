@@ -73,8 +73,8 @@ Carry these forward rather than rediscovering them:
   changes, and fixes living only on unmerged `refs/pull/*` heads. The evaluator read is
   the only filter for these today (`docs/decisions.md`, 2026-09-16).
 - Medium-tier `SAME_FUNCTION_FIX` attributes any later fix-vocabulary commit touching
-  the same function; on the first pass, screening 140 medium candidates yielded one
-  admitted positive.
+  the same function; on the first pass, screening all 214 matchable medium candidates
+  yielded two admitted positives.
 - Symbol extraction has no measured coverage, so a missed function suppresses medium
   signals and inflates the CLEAN pool.
 - Renames and moves are not followed across the correlation window.
