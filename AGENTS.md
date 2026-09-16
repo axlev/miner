@@ -198,6 +198,16 @@ largely has. Remaining gaps, not yet scheduled:
   Net effect on that run: 3 of 7 strong positives were artefacts the sampler cannot
   see, which is the standing argument that the evaluator read, not the tier, is the
   positive filter.
+- The correlator counts fixes that exist only on unmerged `refs/pull/*` heads as
+  corrective: `CommitsAfter` walks `git log --all` and a mirror clone carries every PR
+  head, so a fix commit on a never-merged PR (or one merged later than
+  `observation_end`) still matches. Found 2026-09-16 by the evaluator read: ~35 of 139
+  fixing SHAs in one screening batch and one strong positive (21550) rested on such
+  commits, which under the evaluator's ruling are not fixes. Rule for later: a
+  `--require-reachable-from <ref>` on `correlate` (or a post-filter in
+  `cohort-export`) that admits a fixing commit only if it is an ancestor of the
+  named branch at `observation_end`. Related to `docs/export-contract.md` §7 risk 9.
+  Not built mid-cohort.
 
 The engine-facing contract itself is implemented and verified: `schemas/` exists
 (`prospective-manifest.schema.json`, `reviewer-metadata.schema.json`,
