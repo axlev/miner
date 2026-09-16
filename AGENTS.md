@@ -187,6 +187,17 @@ largely has. Remaining gaps, not yet scheduled:
   `prospective-export`'s duplicate-PR-number handling.
 - Contamination risks 1, 2, 6, 7, 9, and 10 in `docs/export-contract.md` §7 remain open. Treat
   each as its own scoped task.
+- Two strong-tier false attributions found by the evaluator read of the first H1 run
+  (2026-09-16), not fixed mid-cohort by decision: (1) `FIXES_PR` matches the merge
+  commits of a PR's *own backports* (a "Merge pull request #M" whose head commits are
+  `(cherry picked from commit …)` of the case PR's own commits cites the PR without
+  correcting it) — rule to add: exclude a strong signal whose source commit is such a
+  backport merge; (2) `EXPLICIT_REVERT` matches feature withdrawals (a revert on a
+  stable branch followed by a revert on master) — no rule can separate that from a
+  corrective revert; document it in the tier description and leave it to the read.
+  Net effect on that run: 3 of 7 strong positives were artefacts the sampler cannot
+  see, which is the standing argument that the evaluator read, not the tier, is the
+  positive filter.
 
 The engine-facing contract itself is implemented and verified: `schemas/` exists
 (`prospective-manifest.schema.json`, `reviewer-metadata.schema.json`,
