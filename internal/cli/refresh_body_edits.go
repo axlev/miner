@@ -143,7 +143,81 @@ func parsePRSelection(arg string) ([]int, error) {
 	return prs, nil
 }
 
+var refreshBundlesFlags struct {
+	repo, cacheDir, prs, token string
+}
+
+var refreshBundlesCmd = &cobra.Command{
+	Use:           "refresh-bundles",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Short:         "Re-fetch complete cache bundles for named PRs",
+	Long: `Fetches each PR's whole bundle again — pull request, commits, issue events,
+conversation and review comments, and the body's edit history — and writes it into the
+cache, replacing any existing bundle atomically.
+
+This is the path for bundles collected before the current bundle version. A bundle from
+before 2026-09-06 has no rename history at all, none from before 1.1.0 has body edits,
+and none from before 1.2.0 has complete comments; under reviewer-metadata/v2 every one
+of its cases would be "omitted-unverifiable" on both title and description. Re-fetching
+fills all of it through the same path collect uses, and the new bundle's fetched_at and
+bundle_version are its provenance.
+
+Refresh before exporting a cohort, never after: a prospective export records the bundle's
+hash in its evaluator audit, and a bundle refreshed afterwards no longer matches it.
+
+--prs accepts a comma-separated list, a file with one number per line, or a
+cohort-manifest.json whose pairs are refreshed.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		f := refreshBundlesFlags
+		parts := strings.Split(f.repo, "/")
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("--repo must be owner/repo")
+		}
+		prs, err := parsePRSelection(f.prs)
+		if err != nil {
+			return err
+		}
+		if len(prs) == 0 {
+			return fmt.Errorf("--prs selected no PRs")
+		}
+		token := f.token
+		if token == "" {
+			token = os.Getenv("GITHUB_TOKEN")
+		}
+		coll := collector.NewCollector(collector.NewGitHubClient(token), storage.NewDiskCache(f.cacheDir), nil)
+
+		incomplete := 0
+		for _, pr := range prs {
+			b, err := coll.RefreshBundle(context.Background(), parts[0], parts[1], pr)
+			if err != nil {
+				return fmt.Errorf("PR #%d: %w", pr, err)
+			}
+			if !b.BodyEditsComplete || !b.IssueEventsComplete || !b.IssueCommentsComplete || !b.ReviewCommentsComplete {
+				incomplete++
+				fmt.Fprintf(cmd.ErrOrStderr(), "PR #%d: bundle written with an incomplete section (body_edits=%v issue_events=%v issue_comments=%v review_comments=%v)\n",
+					pr, b.BodyEditsComplete, b.IssueEventsComplete, b.IssueCommentsComplete, b.ReviewCommentsComplete)
+			}
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Refreshed %d bundles in %s to version %s: %d complete, %d with an incomplete section\n",
+			len(prs), f.cacheDir, collector.BundleVersion, len(prs)-incomplete, incomplete)
+		if incomplete > 0 {
+			return fmt.Errorf("%d of %d bundles have an incomplete section", incomplete, len(prs))
+		}
+		return nil
+	},
+}
+
 func init() {
+	b := &refreshBundlesFlags
+	refreshBundlesCmd.Flags().StringVar(&b.repo, "repo", "", "Repository as owner/repo")
+	refreshBundlesCmd.Flags().StringVar(&b.cacheDir, "cache-dir", "", "Cache root to write into")
+	refreshBundlesCmd.Flags().StringVar(&b.prs, "prs", "", "PR numbers (comma list), a file of one per line, or a cohort-manifest.json")
+	refreshBundlesCmd.Flags().StringVar(&b.token, "token", "", "GitHub token (default: GITHUB_TOKEN)")
+	for _, name := range []string{"repo", "cache-dir", "prs"} {
+		_ = refreshBundlesCmd.MarkFlagRequired(name)
+	}
+
 	f := &refreshBodyEditsFlags
 	refreshBodyEditsCmd.Flags().StringVar(&f.repo, "repo", "", "Repository as owner/repo")
 	refreshBodyEditsCmd.Flags().StringVar(&f.cacheDir, "cache-dir", "", "Collect-time cache root")

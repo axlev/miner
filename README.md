@@ -101,6 +101,29 @@ false and the reason in `body_edits_error`, and the PR number is logged. A bundl
 an older build has no `bundle_version` and reads as "history unknown", not "never
 edited".
 
+To bring bundles collected before the current version up to date, re-fetch them whole:
+
+```bash
+go run ./cmd/miner refresh-bundles \
+  --repo FRRouting/frr \
+  --cache-dir ./data/cache \
+  --prs ./output/frr-2026-cohort-v1/cohort-manifest.json   # or a file of numbers, or 1,2,3
+```
+
+A bundle from before 2026-09-06 has no rename history at all, one from before 1.1.0 has
+no body edits, and one from before 1.2.0 has only the first page of comments; under
+`reviewer-metadata/v2` each of those makes a case `omitted-unverifiable` on the affected
+field. `refresh-bundles` fetches the whole bundle again through the same path `collect`
+uses and replaces it atomically, so one command fixes all three. What it recovers is the
+*evidence*, not the text: a body genuinely edited after the merge stays
+`omitted-post-cutoff-edit`, which is the rule working. **Refresh before exporting a
+cohort, never after** — a prospective export records the bundle's hash in its evaluator
+audit file.
+
+`refresh-body-edits` below fills only the body-edit section and is superseded by
+`refresh-bundles` for a stale cache; it remains for the narrow case of a cache that is
+current except for body edits.
+
 To fill in body edits on bundles collected before 1.1.0 without re-collecting anything
 else (fetched_at is preserved, the bundle is replaced atomically):
 

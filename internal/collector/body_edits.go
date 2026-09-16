@@ -227,3 +227,39 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// RefreshBundle re-fetches a PR's complete bundle from the provider and writes it
+// into the cache, replacing any existing one atomically.
+//
+// This is the path for a bundle collected before the current bundle version: a
+// 2026-08 bundle carries no rename history, no body-edit history and only the first
+// page of comments, so a partial refresh would have to fill three sections one at a
+// time and still leave the version wrong. Re-fetching gets all of it in one call
+// path — the same one `collect` uses — and the new bundle's own `fetched_at` and
+// `bundle_version` are its provenance.
+//
+// What re-fetching can and cannot recover is worth being clear about: today's rename
+// history reconstructs the title as it stood at any past cutoff, and today's
+// body-edit history proves whether the body was edited after the merge. A body that
+// *was* edited after the merge stays inadmissible, correctly — the refresh recovers
+// the evidence, not the text.
+func (c *Collector) RefreshBundle(ctx context.Context, owner, repo string, prNumber int) (*RawPRBundle, error) {
+	fullName := fmt.Sprintf("%s/%s", owner, repo)
+	bundle, raw, err := c.client.FetchPRBundle(ctx, owner, repo, prNumber)
+	if err != nil {
+		return nil, err
+	}
+	if bundle.PR == nil || bundle.PR.GetNumber() != prNumber {
+		return nil, fmt.Errorf("provider returned no pull request for #%d", prNumber)
+	}
+	if c.cache.HasPR(fullName, prNumber) {
+		if err := c.cache.ReplacePR(fullName, prNumber, raw); err != nil {
+			return nil, err
+		}
+		return bundle, nil
+	}
+	if err := c.cache.WritePR(fullName, prNumber, raw); err != nil {
+		return nil, err
+	}
+	return bundle, nil
+}

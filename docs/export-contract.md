@@ -86,7 +86,8 @@ Registered commands:
 - `cohort-verify`
 - `cohort-export` (added 2026-09-15)
 - `merge-correlated` (added 2026-09-15)
-- `refresh-body-edits` (added 2026-09-15)
+- `refresh-body-edits` (added 2026-09-15; superseded by `refresh-bundles` for a stale cache)
+- `refresh-bundles` (added 2026-09-16)
 - `contamination-keys` (added 2026-09-15)
 - `history-baseline` (added 2026-09-15)
 

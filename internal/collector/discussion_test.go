@@ -7,10 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-github/v62/github"
+	"miner/internal/storage"
 )
 
 // restFake serves the four REST endpoints FetchPRBundle calls, with Link-header
@@ -122,5 +126,48 @@ func TestOldBundleCommentsAreNotComplete(t *testing.T) {
 	}
 	if b.IssueCommentsComplete || b.ReviewCommentsComplete || len(b.IssueComments) != 1 {
 		t.Errorf("old bundle: %+v", b)
+	}
+}
+
+// TestRefreshBundleReplacesAStaleBundleWholesale is the path for a pre-1.2.0 cache:
+// a bundle with no rename history and no body edits is replaced by a complete one,
+// in place, at the current version.
+func TestRefreshBundleReplacesAStaleBundleWholesale(t *testing.T) {
+	dir := t.TempDir()
+	cache := storage.NewDiskCache(dir)
+	stale := `{"pull_request":{"number":7,"title":"t"},"issue_comments":[{"id":1,"body":"one page"}],"fetched_at":"2026-08-23T15:59:01Z"}`
+	if err := cache.WritePR("o/r", 7, []byte(stale)); err != nil {
+		t.Fatal(err)
+	}
+	f := &restFake{issuePages: 2, reviewPages: 1}
+	srv := httptest.NewServer(f.handler(t))
+	defer srv.Close()
+	coll := NewCollector(restClient(srv), cache, nil)
+
+	b, err := coll.RefreshBundle(context.Background(), "o", "r", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.BundleVersion != BundleVersion || !b.IssueEventsComplete || !b.BodyEditsComplete || !b.IssueCommentsComplete || !b.ReviewCommentsComplete {
+		t.Errorf("refreshed bundle is not complete at the current version: %+v", b)
+	}
+	var got RawPRBundle
+	if err := cache.ReadPR("o/r", 7, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.BundleVersion != BundleVersion || len(got.IssueComments) != 2 || len(got.ReviewComments) != 1 {
+		t.Errorf("cache still holds the stale bundle: %+v", got)
+	}
+	if got.FetchedAt.Year() != time.Now().UTC().Year() {
+		t.Errorf("fetched_at was not renewed: %v", got.FetchedAt)
+	}
+	// No temporary sibling is left behind.
+	entries, _ := os.ReadDir(filepath.Dir(cache.PRCachePath("o/r", 7)))
+	if len(entries) != 1 {
+		t.Errorf("cache dir holds %d entries, want 1", len(entries))
+	}
+	// A PR absent from the cache is created, not refused.
+	if _, err := coll.RefreshBundle(context.Background(), "o", "r", 7); err != nil {
+		t.Errorf("second refresh: %v", err)
 	}
 }

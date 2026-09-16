@@ -43,6 +43,7 @@ func init() {
 	RootCmd.AddCommand(cohortExportCmd)
 	RootCmd.AddCommand(mergeCorrelatedCmd)
 	RootCmd.AddCommand(refreshBodyEditsCmd)
+	RootCmd.AddCommand(refreshBundlesCmd)
 	RootCmd.AddCommand(contaminationKeysCmd)
 	RootCmd.AddCommand(historyBaselineCmd)
 }
