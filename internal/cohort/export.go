@@ -81,6 +81,11 @@ type ExportOptions struct {
 	// absent, or ends up unused fails the export. A cohort whose negatives were
 	// chosen by reading them must not quietly ship one the sampler preferred.
 	Negatives []int
+	// ExcludedNegatives are records the evaluator vetoed as negatives, whatever the
+	// sampler would make of them. Under an explicit Negatives list this changes
+	// nothing, and that is the point: the manifest records what was rejected, not
+	// merely what was kept, so a later reader can tell a veto from an oversight.
+	ExcludedNegatives []int
 	// MinFixDate, when non-zero, admits a positive only if its earliest corrective
 	// signal is at or after this instant (pre-registration §3: the fix must postdate
 	// the treatment model's training cutoff). Recorded in the manifest.
@@ -240,6 +245,7 @@ type Exclusions struct {
 	PartialEvidence      int `json:"partial_evidence"`
 	NotInPositiveList    int `json:"not_in_positive_list"`
 	NotInNegativeList    int `json:"not_in_negative_list"`
+	VetoedNegative       int `json:"vetoed_negative"`
 	OverSubsystemQuota   int `json:"over_subsystem_quota"`
 	UncountedNegative    int `json:"uncounted_negative"`   // zero signals, but no correlated_by: unverifiable
 	UninspectedNegative  int `json:"uninspected_negative"` // zero signals, but some diffs were not inspected
@@ -287,6 +293,7 @@ type Manifest struct {
 		MinExposureDays   int     `json:"min_exposure_days"`
 		Positives         []int   `json:"positives"`
 		Negatives         []int   `json:"negatives"`
+		ExcludedNegatives []int   `json:"excluded_negatives"`
 		MinFixDate        string  `json:"min_fix_date"` // RFC3339, or "" when not applied
 		MaxPerSubsystem   int     `json:"max_per_subsystem"`
 		FallbackSubsystem bool    `json:"fallback_subsystem"`
@@ -503,6 +510,8 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 	sort.Ints(m.Filters.Positives)
 	m.Filters.Negatives = append([]int{}, opt.Negatives...)
 	sort.Ints(m.Filters.Negatives)
+	m.Filters.ExcludedNegatives = append([]int{}, opt.ExcludedNegatives...)
+	sort.Ints(m.Filters.ExcludedNegatives)
 	m.Filters.MaxPerSubsystem = opt.MaxPerSubsystem
 	m.Filters.FallbackSubsystem = opt.FallbackSubsystem
 	m.Matching.Key = append([]string{}, opt.MatchKey...)
@@ -525,6 +534,13 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 	explicitNeg := map[int]bool{}
 	for _, pr := range opt.Negatives {
 		explicitNeg[pr] = true
+	}
+	vetoed := map[int]bool{}
+	for _, pr := range opt.ExcludedNegatives {
+		if explicitNeg[pr] {
+			return nil, nil, fmt.Errorf("PR #%d is in both the negatives list and the veto list; one of the two is wrong", pr)
+		}
+		vetoed[pr] = true
 	}
 
 	seen := map[int]string{}
@@ -588,6 +604,8 @@ func build(opt ExportOptions) ([]Case, *Manifest, error) {
 						return nil, nil, fmt.Errorf("PR #%d was listed as a negative but %d commit diffs in its window could not be inspected, so \"no evidence\" is not established for it", pr, rec.Retrospective.UninspectedCommitCount)
 					}
 					m.Exclusions.UninspectedNegative++
+				case vetoed[pr]:
+					m.Exclusions.VetoedNegative++
 				case len(explicitNeg) > 0 && !explicitNeg[pr]:
 					allByKey[ck]++
 					m.Exclusions.NotInNegativeList++

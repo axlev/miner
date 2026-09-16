@@ -16,12 +16,12 @@ import (
 )
 
 var cohortExportFlags struct {
-	inputs                                                                 []string
-	out, name, positiveSignals, positives, negatives, minFixDate, cacheDir string
-	matchKey                                                               string
-	fallbackSubsystem                                                      bool
-	minScore                                                               float64
-	minExposureDays, maxPerSubsystem                                       int
+	inputs                                                                                   []string
+	out, name, positiveSignals, positives, negatives, excludeNegatives, minFixDate, cacheDir string
+	matchKey                                                                                 string
+	fallbackSubsystem                                                                        bool
+	minScore                                                                                 float64
+	minExposureDays, maxPerSubsystem                                                         int
 }
 
 // parseSource accepts "label=path" or a bare path, whose label is then the file's
@@ -104,6 +104,10 @@ arguments is a different cohort.`,
 		if err != nil {
 			return err
 		}
+		excluded, err := parsePRList(f.excludeNegatives, "excluded_negatives")
+		if err != nil {
+			return err
+		}
 		var minFixDate time.Time
 		if f.minFixDate != "" {
 			t, err := time.Parse("2006-01-02", f.minFixDate)
@@ -127,6 +131,7 @@ arguments is a different cohort.`,
 			MinExposureDays:   f.minExposureDays,
 			Positives:         positives,
 			Negatives:         negatives,
+			ExcludedNegatives: excluded,
 			MinFixDate:        minFixDate,
 			CacheDir:          f.cacheDir,
 			MatchKey:          matchKey,
@@ -167,6 +172,7 @@ func init() {
 	cohortExportCmd.Flags().IntVar(&f.minExposureDays, "min-exposure-days", cohort.DefaultMinExposureDays, "Minimum days between merged_at and observation_end, both classes")
 	cohortExportCmd.Flags().StringVar(&f.cacheDir, "cache-dir", "", "Collect-time cache root; when set, each case records the reviewer-metadata/v2 admission outcome per field")
 	cohortExportCmd.Flags().StringVar(&f.minFixDate, "min-fix-date", "", "Admit a positive only if its earliest corrective signal is on or after this date (YYYY-MM-DD)")
+	cohortExportCmd.Flags().StringVar(&f.excludeNegatives, "exclude-negatives", "", "PRs vetoed as negatives, in the same forms as --negatives (a JSON object is read from its \"excluded_negatives\" array). Recorded in the manifest so a veto is distinguishable from an oversight")
 	cohortExportCmd.Flags().StringVar(&f.negatives, "negatives", "", "Explicit negative picks: comma list, a file of one number per line, or JSON (array, or object with a \"negatives\" array of numbers or of objects carrying \"pr\"). The negative pool is then exactly these, and every one must be used")
 	cohortExportCmd.Flags().StringVar(&f.positives, "positives", "", "Comma-separated explicit positive shortlist; each must qualify and match, or the export fails")
 	for _, name := range []string{"input", "out", "name"} {

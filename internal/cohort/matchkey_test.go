@@ -463,3 +463,35 @@ func TestExplicitNegativesCannotHideAFullKeyMatch(t *testing.T) {
 		t.Errorf("pairs = %+v fallback = %d", m.Pairs, m.FallbackPairs)
 	}
 }
+
+// TestVetoedNegativesAreRecordedNotJustDropped: a vetoed record never enters the
+// pool, the manifest says which were vetoed, and a PR in both lists is a
+// contradiction rather than a precedence puzzle.
+func TestVetoedNegativesAreRecordedNotJustDropped(t *testing.T) {
+	records := []model.PRCandidateRecord{
+		cohortRecord(1, "bgpd", 20, 0.7, 1, 0, 0, 400),
+		cohortRecord(2, "bgpd", 20, 0.7, 0, 0, 0, 400), // the sampler's preference
+		cohortRecord(3, "bgpd", 25, 0.7, 0, 0, 0, 400),
+	}
+	opt := options(t, "veto")
+	opt.ExcludedNegatives = []int{2}
+	m, err := export(records, nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Pairs) != 1 || m.Pairs[0].Negative != 3 {
+		t.Fatalf("the vetoed negative must not be used: %+v", m.Pairs)
+	}
+	if m.Exclusions.VetoedNegative != 1 {
+		t.Errorf("the veto must be counted: %+v", m.Exclusions)
+	}
+	if len(m.Filters.ExcludedNegatives) != 1 || m.Filters.ExcludedNegatives[0] != 2 {
+		t.Errorf("the veto list must be recorded: %v", m.Filters.ExcludedNegatives)
+	}
+	both := options(t, "both")
+	both.Negatives = []int{2}
+	both.ExcludedNegatives = []int{2}
+	if _, err := export(records, nil, both); err == nil || !strings.Contains(err.Error(), "both the negatives list and the veto list") {
+		t.Errorf("a PR in both lists must fail: %v", err)
+	}
+}
